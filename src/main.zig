@@ -3,6 +3,7 @@ const Io = std.Io;
 const math = std.math;
 const print = std.debug.print;
 
+const line_char = '*';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000.0 / @as(f32, fps)));
 const dt: f32 = 1.0 / @as(f32, fps);
@@ -90,7 +91,7 @@ pub fn main(init: std.process.Init) !void {
 
     var a: f32 = 0;
     const world_space: f32 = 5.0;
-    const scale: f32 = @as(f32, @floatFromInt(winsize.col)) / 1.1;
+    const scale: f32 = @as(f32, @floatFromInt(winsize.col));
 
     while (true) {
         if (should_quit) break;
@@ -170,36 +171,25 @@ fn draw_line(p0: Coord2, p1: Coord2, buf: []u8, cols: u16, rows: u16) void {
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
     const step: f32 = @max(@abs(dx), @abs(dy));
-    const step_u: usize = @trunc(@max(@abs(dx), @abs(dy)));
 
-    if (step > 0) {
-        const stepX = dx / step;
-        const stepY = dy / step;
-        for (0..step_u + 1) |i| {
-            const ii = @as(f32, @floatFromInt(i));
-            const x: f32 = @round(p0.x + ii * stepX);
-            const y: f32 = @round(p0.y + ii * stepY);
-            buf[
-                coord_to_i(
-                    .{ .x = x, .y = y },
-                    cols,
-                    rows,
-                ).?
-            ] = '.';
-            // print("x: {d} y: {d}\n", .{ x, y });
-        }
+    if (step == 0) return;
+    const stepX = dx / step;
+    const stepY = dy / step;
+    for (0..(@as(usize, @trunc(step))) + 1) |i| {
+        const ii = @as(f32, @floatFromInt(i));
+        const x: f32 = @round(p0.x + ii * stepX);
+        const y: f32 = @round(p0.y + ii * stepY);
+        buf[
+            coord_to_i(
+                .{ .x = x, .y = y },
+                cols,
+                rows,
+            ).?
+        ] = line_char;
     }
 }
 
 const expect = std.testing.expect;
-
-// test "draw_line_1" {
-//     const r = draw_line(
-//         .{ .x = -2.0, .y = 2.0 },
-//         .{ .x = 2.0, .y = 2.0 },
-//     );
-//     _ = r;
-// }
 
 test "coord_to_i_1" {
     const cols = 100;
@@ -247,7 +237,6 @@ test "project_farther_is_smaller" {
     const far = project(.{ .x = 10.0, .y = 5.0, .z = 10.0 });
     try expect(@abs(far.x) < @abs(near.x));
     try expect(@abs(far.y) < @abs(near.y));
-
     try expect(far.x == 1.0);
     try expect(far.y == 0.5);
 }
