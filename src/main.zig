@@ -65,44 +65,42 @@ pub fn main(init: std.process.Init) !void {
         buf,
     );
     const writer = &_writer.interface;
-    const ix: f32 = 10;
-    const iy: f32 = 5;
-    const z: f32 = 1.0;
-    const z2: f32 = 6.0;
 
-    const faces = [_]Coord3{
-        // front
-        Coord3{ .x = ix, .y = iy, .z = z },
-        Coord3{ .x = -ix, .y = iy, .z = z },
-        Coord3{ .x = ix, .y = -iy, .z = z },
-        Coord3{ .x = -ix, .y = -iy, .z = z },
+    const mesh = [_]Coord3{
+        .{ .x = -1, .y = 1, .z = -1 },
+        .{ .x = 1, .y = 1, .z = -1 },
+        .{ .x = 1, .y = -1, .z = -1 },
+        .{ .x = -1, .y = -1, .z = -1 },
         // back
-        Coord3{ .x = ix, .y = iy, .z = z2 },
-        Coord3{ .x = -ix, .y = iy, .z = z2 },
-        Coord3{ .x = ix, .y = -iy, .z = z2 },
-        Coord3{ .x = -ix, .y = -iy, .z = z2 },
+        .{ .x = -1, .y = 1, .z = 1 },
+        .{ .x = 1, .y = 1, .z = 1 },
+        .{ .x = 1, .y = -1, .z = 1 },
+        .{ .x = -1, .y = -1, .z = 1 },
     };
 
     var a: f32 = 0;
-    var dz: f32 = 0;
+    var dz: f32 = 1;
+    const world_space: f32 = 5.0;
+    const scale: f32 = @as(f32, @floatFromInt(winsize.col)) / 1.1;
 
     while (true) {
         print("\x1b[2J\x1b[H", .{});
         @memset(buf, ' ');
-        dz += 1 * dt;
-        a += 0.3 * dt;
+        // dz += 1 * dt;
+        _ = &dz;
+        a = @mod(a + 2.0 * dt, std.math.tau);
 
-        for (faces) |face| {
-            const i = coord_to_i(
-                project(
-                    // face,
-                    rotate_xz(face, a),
-                    // translate_z(face, dz),
-                ),
-                winsize.col,
-                winsize.row,
-            );
-            buf[i] = '@';
+        for (mesh) |vec| {
+            var r = rotate_xz(vec, a);
+            r.z += world_space;
+
+            var p = project(r);
+            p.x *= scale;
+            p.y *= scale * 0.5; // cells are 2x taller than wide
+
+            if (coord_to_i(p, winsize.col, winsize.row)) |i| {
+                buf[i] = '@';
+            }
         }
 
         writer.end = buf_len - 1;
@@ -117,13 +115,16 @@ pub fn main(init: std.process.Init) !void {
     print("\x1b[2J\x1b[H\x1b[?25h", .{});
 }
 
-fn coord_to_i(c: Coord2, cols: u16, rows: u16) usize {
+fn coord_to_i(c: Coord2, cols: u16, rows: u16) ?usize {
     const cols_i: isize = @intCast(cols);
     const rows_i: isize = @intCast(rows);
     const cy: isize = @trunc(c.y);
     const cx: isize = @trunc(c.x);
-    const idx = (@divTrunc(rows_i, 2) - cy) * cols_i + (@divTrunc(cols_i, 2) + cx);
-    return @intCast(std.math.clamp(idx, 0, cols_i * rows_i - 1));
+    const row = @divTrunc(rows_i, 2) - cy;
+    const col = @divTrunc(cols_i, 2) + cx;
+    if (row < 0 or row >= rows_i) return null;
+    if (col < 0 or col >= cols_i) return null;
+    return @intCast(row * cols_i + col);
 }
 
 fn project(c: Coord3) Coord2 {
@@ -157,15 +158,19 @@ test "coord_to_i_1" {
 test "coord_to_i_2" {
     const cols = 100;
     const rows = 50;
-    const r = coord_to_i(.{ .x = cols - 1, .y = rows - 1 }, cols, rows);
-    try expect(r == 0);
+    const r = coord_to_i(.{ .x = 49, .y = -24 }, cols, rows);
+    try expect(r != null);
+    try expect(r.? == 49 * 100 + 99);
 }
 
 test "coord_to_i_3" {
+    // out of bounds in every direction → null
     const cols = 10;
     const rows = 10;
-    const r = coord_to_i(.{ .x = -cols, .y = -rows }, cols, rows);
-    try expect(r == 99);
+    try expect(coord_to_i(.{ .x = 100, .y = 0 }, cols, rows) == null);
+    try expect(coord_to_i(.{ .x = -100, .y = 0 }, cols, rows) == null);
+    try expect(coord_to_i(.{ .x = 0, .y = 100 }, cols, rows) == null);
+    try expect(coord_to_i(.{ .x = 0, .y = -100 }, cols, rows) == null);
 }
 
 test "project_z1_is_identity" {
