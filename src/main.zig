@@ -49,13 +49,17 @@ pub fn main(init: std.process.Init) !void {
     );
 
     const arena: std.mem.Allocator = init.arena.allocator();
-    const buf = try arena.alloc(u8, winsize.col * winsize.row);
-    const buf_len = buf.len;
+    // extra 3 for clear ANSI
+    var buf_ = try arena.alloc(u8, winsize.col * winsize.row + 3);
+    buf_[0] = '\x1b';
+    buf_[1] = '[';
+    buf_[2] = 'H';
+    const buf = buf_[3..];
     @memset(buf, ' ');
     var _writer: Io.File.Writer = .init(
         stdout,
         init.io,
-        buf,
+        buf_,
     );
     const writer = &_writer.interface;
 
@@ -81,12 +85,11 @@ pub fn main(init: std.process.Init) !void {
     var out: [mesh.len]Coord2 = undefined;
 
     while (!should_quit) {
-        print("\x1b[2J\x1b[H", .{});
         @memset(buf, ' ');
-        a = @mod(a + 2.0 * dt, std.math.tau);
+        a = @mod(a + 1.0 * dt, std.math.tau);
 
         inline for (mesh, 0..) |v, i| {
-            out[i] = project(scale2(move_z(rotate_xz(v, a)), scale_));
+            out[i] = project(scale(move_z(rotate_xz(v, a)), scale_));
         }
 
         inline for (fs[0], fs[1]) |v1, v2| {
@@ -99,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
             );
         }
 
-        writer.end = buf_len - 1;
+        writer.end = buf_.len - 1;
         try writer.flush();
         try init.io.sleep(
             Io.Duration.fromMilliseconds(ms_to_sleep),
@@ -127,12 +130,7 @@ fn project(c: Coord3) Coord2 {
     return .{ .x = c.x / c.z, .y = c.y / c.z };
 }
 
-fn scale(c: *Coord3, s: f32) void {
-    c.x *= s;
-    c.y *= s * 0.5;
-}
-
-fn scale2(c: Coord3, s: f32) Coord3 {
+fn scale(c: Coord3, s: f32) Coord3 {
     return .{
         .x = c.x * s,
         .y = c.y * s * 0.5,
@@ -165,25 +163,56 @@ fn draw_line(p0: Coord2, p1: Coord2, buf: []u8, cols: u16, rows: u16) void {
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
     const step: f32 = @max(@abs(dx), @abs(dy));
-
     if (step == 0) return;
+
     const stepX = dx / step;
     const stepY = dy / step;
-    for (0..(@as(usize, @trunc(step))) + 1) |i| {
+
+    const half_cols = @divTrunc(cols, 2);
+    const half_rows = @divTrunc(rows, 2);
+
+    for (0..(@as(usize, @round(step))) + 1) |i| {
         const ii = @as(f32, @floatFromInt(i));
-        const x: f32 = @round(p0.x + ii * stepX);
-        const y: f32 = @round(p0.y + ii * stepY);
-        buf[
-            coord_to_i(
-                .{ .x = x, .y = y },
-                cols,
-                rows,
-            ).?
-        ] = line_char;
+        const row = half_rows - @as(isize, @intFromFloat(@round(
+            p0.y + ii * stepY,
+        )));
+        const col = half_cols + @as(isize, @intFromFloat(@round(
+            p0.x + ii * stepX,
+        )));
+        if (row >= 0 and row < rows and col >= 0 and col < cols) {
+            buf[@intCast(row * cols + col)] = line_char;
+        }
     }
 }
 
 const expect = std.testing.expect;
+
+test "bench_draw_line" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    const io = threaded.io();
+    defer threaded.deinit();
+    const clock = Io.Clock.boot;
+    const cols = 100;
+    const rows = 50;
+    var buf: [cols * rows]u8 = @splat(' ');
+    const now = clock.now(io);
+
+    for (0..1_000_000) |_| {
+        draw_line(
+            Coord2{ .x = -10, .y = 10 },
+            Coord2{ .x = 10, .y = -10 },
+            &buf,
+            cols,
+            rows,
+        );
+    }
+
+    const took = now.untilNow(io, clock);
+    print("took: {}ms\n", .{took.toMilliseconds()});
+
+    std.mem.doNotOptimizeAway(&buf);
+}
 
 test "coord_to_i_1" {
     const cols = 100;
