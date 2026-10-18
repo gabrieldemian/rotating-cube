@@ -8,15 +8,6 @@ const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000.0 / @as(f32, fps)));
 const dt: f32 = 1.0 / @as(f32, fps);
 
-// hide cursor \x1b[?25l
-// show l -> h
-
-// clear screen and put cursor at top left
-// "\x1b[2J\x1b[H"
-
-// writes hello at the same position if called in a loop
-// \x1b[Hhello
-
 var should_quit = false;
 
 fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
@@ -80,51 +71,32 @@ pub fn main(init: std.process.Init) !void {
         .{ .x = -1, .y = -1, .z = -1 },
         .{ .x = 1, .y = -1, .z = -1 },
     };
-    const fs = [6][]const u8{
-        &[_]u8{ 0, 1, 2, 3 },
-        &[_]u8{ 4, 5, 6, 7 },
-        &[_]u8{ 0, 4 },
-        &[_]u8{ 1, 5 },
-        &[_]u8{ 2, 6 },
-        &[_]u8{ 3, 7 },
+    const fs = [2][12]u8{
+        .{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 },
+        .{ 1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7 },
     };
 
     var a: f32 = 0;
-    const world_space: f32 = 5.0;
-    const scale: f32 = @as(f32, @floatFromInt(winsize.col));
+    const scale_: f32 = @as(f32, @floatFromInt(winsize.col)) * 1.3;
+    var out: [mesh.len]Coord2 = undefined;
 
-    while (true) {
-        if (should_quit) break;
+    while (!should_quit) {
         print("\x1b[2J\x1b[H", .{});
         @memset(buf, ' ');
         a = @mod(a + 2.0 * dt, std.math.tau);
 
-        for (fs) |f| {
-            for (f, 0..f.len) |vertex, i| {
-                // _ = vertex;
-                // const vec = mesh[f[i]];
-                const vec = mesh[vertex];
-                var r = rotate_xz(vec, a);
-                r.z += world_space;
+        inline for (mesh, 0..) |v, i| {
+            out[i] = project(scale2(move_z(rotate_xz(v, a)), scale_));
+        }
 
-                var p = project(r);
-                p.x *= scale;
-                p.y *= scale * 0.5; // cells are 2x taller than wide
-
-                // if (coord_to_i(p, winsize.col, winsize.row)) |buf_i| {
-                //     buf[buf_i] = '@';
-                // }
-
-                // draw lines
-                // const next = mesh[(i + 1) % mesh.len];
-                const next = mesh[f[(i + 1) % f.len]];
-                var rr = rotate_xz(next, a);
-                rr.z += world_space;
-                var pp = project(rr);
-                pp.x *= scale;
-                pp.y *= scale * 0.5;
-                draw_line(p, pp, buf, winsize.col, winsize.row);
-            }
+        inline for (fs[0], fs[1]) |v1, v2| {
+            draw_line(
+                out[v1],
+                out[v2],
+                buf,
+                winsize.col,
+                winsize.row,
+            );
         }
 
         writer.end = buf_len - 1;
@@ -153,6 +125,28 @@ fn coord_to_i(c: Coord2, cols: u16, rows: u16) ?usize {
 
 fn project(c: Coord3) Coord2 {
     return .{ .x = c.x / c.z, .y = c.y / c.z };
+}
+
+fn scale(c: *Coord3, s: f32) void {
+    c.x *= s;
+    c.y *= s * 0.5;
+}
+
+fn scale2(c: Coord3, s: f32) Coord3 {
+    return .{
+        .x = c.x * s,
+        .y = c.y * s * 0.5,
+        .z = c.z,
+    };
+}
+
+fn move_z(c: Coord3) Coord3 {
+    const d: f32 = 5;
+    return .{
+        .x = c.x,
+        .y = c.y,
+        .z = c.z + d,
+    };
 }
 
 fn rotate_xz(c: Coord3, a: f32) Coord3 {
@@ -240,3 +234,12 @@ test "project_farther_is_smaller" {
     try expect(far.x == 1.0);
     try expect(far.y == 0.5);
 }
+
+// hide cursor \x1b[?25l
+// show l -> h
+
+// clear screen and put cursor at top left
+// "\x1b[2J\x1b[H"
+
+// writes hello at the same position if called in a loop
+// \x1b[Hhello
