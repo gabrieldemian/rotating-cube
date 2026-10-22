@@ -52,17 +52,18 @@ pub fn main(init: std.process.Init) !void {
     );
     const writer = &_writer.interface;
 
+    // counter clockwise vertices
     const mesh = [_]@Vector(3, f32){
         // back
-        .{ 1, 1, 1 },
-        .{ -1, 1, 1 },
-        .{ -1, -1, 1 },
-        .{ 1, -1, 1 },
+        .{ -1, 1, 1 }, // top-right
+        .{ 1, 1, 1 }, // top-left
+        .{ 1, -1, 1 }, // bottom-left
+        .{ -1, -1, 1 }, // bottom-right
         // front
-        .{ 1, 1, -1 },
-        .{ -1, 1, -1 },
-        .{ -1, -1, -1 },
-        .{ 1, -1, -1 },
+        .{ -1, 1, -1 }, // top-right
+        .{ 1, 1, -1 }, // top-left
+        .{ 1, -1, -1 }, // bottom-left
+        .{ -1, -1, -1 }, // bottom-right
     };
     const fs = [2][12]u8{
         .{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 },
@@ -151,12 +152,15 @@ fn draw_line(
     const half_cols = @divTrunc(cols, 2);
     const half_rows = @divTrunc(rows, 2);
 
+    // const e1 = p1 - p0;
+    // const e2 = p2 - p0;
+
     for (0..(@as(usize, @round(step))) + 1) |i| {
         const ii = @as(f32, @floatFromInt(i));
-        const row = half_rows - @as(isize, @intFromFloat(@round(
+        const row = half_rows - @as(isize, @trunc(@round(
             p0[1] + ii * stepY,
         )));
-        const col = half_cols + @as(isize, @intFromFloat(@round(
+        const col = half_cols + @as(isize, @trunc(@round(
             p0[0] + ii * stepX,
         )));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
@@ -165,32 +169,103 @@ fn draw_line(
     }
 }
 
+/// |v|
+fn magnitude(v: anytype) f32 {
+    return @sqrt(@reduce(.Add, v * v));
+}
+
+/// a · b
+fn dot(a: anytype, b: anytype) f32 {
+    return @reduce(.Add, a * b);
+}
+
+/// a × b
+fn cross(a: @Vector(3, f32), b: @Vector(3, f32)) @Vector(3, f32) {
+    return .{
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    };
+}
+
+/// Normalize vector `v`
+fn norm(v: anytype) @TypeOf(v) {
+    return v / @as(@TypeOf(v), @splat(magnitude(v)));
+}
+
 const expect = std.testing.expect;
 
-test "bench_draw_line" {
-    const gpa = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    const io = threaded.io();
-    defer threaded.deinit();
-    const clock = Io.Clock.boot;
-    const cols = 100;
-    const rows = 50;
-    var buf: [cols * rows]u8 = @splat(' ');
-    const now = clock.now(io);
-
-    for (0..1_000_000) |_| {
-        draw_line(
-            @Vector(2, f32){ -10, 10 },
-            @Vector(2, f32){ 10, -10 },
-            &buf,
-            cols,
-            rows,
-        );
-    }
-
-    const took = now.untilNow(io, clock);
-    print("took: {}ms\n", .{took.toMilliseconds()});
+test "cross" {
+    const a = @Vector(3, f32){ 2, 3, 4 };
+    const b = @Vector(3, f32){ 5, 6, 7 };
+    const c = cross(a, b);
+    try expect(c[0] == -3);
+    try expect(c[1] == 6);
+    try expect(c[2] == -3);
 }
+
+test "normalize" {
+    const v = @Vector(3, f32){ 10, 10, 10 };
+    const n = norm(v);
+    // a normalized vector has a length of ~1
+    const sum = @reduce(.Add, n * n);
+    try expect(sum > 0.999999 and sum < 1.000001);
+    try expect(n[0] == 0.57735026);
+    try expect(n[1] == 0.57735026);
+    try expect(n[2] == 0.57735026);
+}
+
+test "magnitude" {
+    const v = @Vector(3, f32){ 10, 10, 10 };
+    const vlen = magnitude(v);
+    try expect(vlen == 17.320509);
+}
+
+test "dot_product" {
+    const a = @Vector(2, f32){ -12, 16 };
+    const b = @Vector(2, f32){ 12, 9 };
+    const d = dot(a, b);
+    try expect(d == 0);
+}
+
+test "dot_product_1" {
+    const a = @Vector(3, f32){ 0, 0, -1 };
+    const b = @Vector(3, f32){ 0, 0, -1 };
+    const d = dot(a, b);
+    // same direction
+    try expect(d == 1);
+}
+
+test "dot_product_2" {
+    const a = @Vector(3, f32){ 0, 0, -1 };
+    const b = @Vector(3, f32){ 0, 0, 1 };
+    const d = dot(a, b);
+    // pointing to each other (opposite directions)
+    try expect(d == -1);
+}
+
+// test "bench_draw_line" {
+//     const gpa = std.testing.allocator;
+//     var threaded: std.Io.Threaded = .init(gpa, .{});
+//     const io = threaded.io();
+//     defer threaded.deinit();
+//     const clock = Io.Clock.boot;
+//     const cols = 100;
+//     const rows = 50;
+//     var buf: [cols * rows]u8 = @splat(' ');
+//     const now = clock.now(io);
+//     for (0..1_000_000) |_| {
+//         draw_line(
+//             @Vector(2, f32){ -10, 10 },
+//             @Vector(2, f32){ 10, -10 },
+//             &buf,
+//             cols,
+//             rows,
+//         );
+//     }
+//     const took = now.untilNow(io, clock);
+//     print("took: {}ms\n", .{took.toMilliseconds()});
+// }
 
 test "coord_to_i_1" {
     const cols = 100;
