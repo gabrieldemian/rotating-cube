@@ -7,10 +7,10 @@ const line_char = '*';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000.0 / @as(f32, fps)));
 const dt: f32 = 1.0 / @as(f32, fps);
-
 const camera = @Vector(3, f32){ 0, 0, 0 };
 
 var should_quit = false;
+var bufe: [1024][2]f32 = undefined;
 
 fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
     should_quit = true;
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     const writer = &_writer.interface;
 
     // counter clockwise vertices
-    const mesh = [8]@Vector(3, f32){
+    const mesh = [_]@Vector(3, f32){
         // back
         .{ 1, 1, 1 }, // top-right
         .{ -1, 1, 1 }, //  top-left
@@ -67,11 +67,7 @@ pub fn main(init: std.process.Init) !void {
         .{ 1, -1, -1 }, // bottom-left
         .{ -1, -1, -1 }, // bottom-right
     };
-    const fs = [2][12]u8{
-        .{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 },
-        .{ 1, 2, 3, 0, 5, 6, 7, 4, 5, 4, 7, 6 },
-    };
-    const tris = [12][3]u8{
+    const tris = [_][3]u8{
         .{ 0, 1, 2 }, .{ 0, 2, 3 }, // back   (+z)
         .{ 4, 5, 6 }, .{ 4, 6, 7 }, // front  (−z)
         .{ 0, 3, 6 }, .{ 0, 6, 5 }, // right  (+x)
@@ -83,32 +79,42 @@ pub fn main(init: std.process.Init) !void {
     var a: f32 = 0;
     const scalar = @as(f32, @floatFromInt(winsize.col)) * 1.3;
     const scale = @Vector(3, f32){ scalar, scalar * 0.5, 1 };
-    var out: [mesh.len]@Vector(2, f32) = undefined;
+    var out: [mesh.len]@Vector(3, f32) = undefined;
 
     while (!should_quit) {
         @memset(buf, ' ');
         a = @mod(a + 1.0 * dt, std.math.tau);
 
         inline for (mesh, 0..) |v, i| {
-            out[i] = project(scale * move_z(rotate_xz(v, a)));
+            out[i] = scale * move_z(rotate_xz(v, a));
         }
 
-        for (0..tris.len) |i| {
-            if (!cull(tris[i], tris[i + 1], tris[i + 2]) <= 0) {
+        for (tris) |t| {
+            const t0 = out[t[0]];
+            const t1 = out[t[1]];
+            const t2 = out[t[2]];
+            if (cull(t0, t1, t2)) {
+                _ = rasterize(
+                    project(t0),
+                    project(t1),
+                    project(t2),
+                    buf,
+                    winsize.col,
+                    winsize.row,
+                );
                 continue;
             }
-            i += 2;
         }
 
-        inline for (fs[0], fs[1]) |v1, v2| {
-            draw_line(
-                out[v1],
-                out[v2],
-                buf,
-                winsize.col,
-                winsize.row,
-            );
-        }
+        // inline for (fs[0], fs[1]) |v1, v2| {
+        //     draw_line(
+        //         out[v1],
+        //         out[v2],
+        //         buf,
+        //         winsize.col,
+        //         winsize.row,
+        //     );
+        // }
 
         writer.end = buf_.len - 1;
         try writer.flush();
@@ -122,32 +128,25 @@ pub fn main(init: std.process.Init) !void {
     print("\x1b[2J\x1b[H\x1b[?25h", .{});
 }
 
-fn coord_to_i(v: @Vector(2, f32), cols: u16, rows: u16) ?usize {
-    const cols_i: isize = @intCast(cols);
-    const rows_i: isize = @intCast(rows);
-    const cy: isize = @trunc(v[1]);
-    const cx: isize = @trunc(v[0]);
-    const row = @divTrunc(rows_i, 2) - cy;
-    const col = @divTrunc(cols_i, 2) + cx;
-    if (row < 0 or row >= rows_i) return null;
-    if (col < 0 or col >= cols_i) return null;
-    return @intCast(row * cols_i + col);
+fn coord_to_i(v: @Vector(2, f32), cols: u16) usize {
+    return @intCast(v[1] * cols + v[0]);
 }
 
 /// Returns true if the triangle is visible.
 fn cull(v0: @Vector(3, f32), v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
-    const n = norm(cross(v1 - v0, v2 - v0));
+    if (v0[2] == 0 or v1[2] == 0 or v2[2] == 0) return false;
+    const n = norm(cross(v2 - v0, v1 - v0));
     const cen = (v0 + v1 + v2) / @as(@Vector(3, f32), @splat(3));
     return dot(n, norm(camera - cen)) > 0;
 }
 
 fn project(v: @Vector(3, f32)) @Vector(2, f32) {
-    return .{ v[0] / v[2], v[1] / v[2] };
+    return .{ v[0] / v[2], v[1] / -v[2] };
 }
 
 fn move_z(v: @Vector(3, f32)) @Vector(3, f32) {
     const d: f32 = 5;
-    return .{ v[0], v[1], v[2] + d };
+    return .{ v[0], v[1], v[2] - d };
 }
 
 fn rotate_xz(v: @Vector(3, f32), a: f32) @Vector(3, f32) {
@@ -162,37 +161,89 @@ fn rotate_x(v: @Vector(3, f32), a: f32) @Vector(3, f32) {
     return .{ v[0] * cos - v[2] * sin, v[1], v[2] };
 }
 
-/// Draw line calculating slope and diffs
+/// Draw line calculating slope and diffs.
+/// Assumes the line is visible.
 fn draw_line(
-    p0: @Vector(2, f32),
-    p1: @Vector(2, f32),
-    buf: []u8,
+    v0: @Vector(2, f32),
+    v1: @Vector(2, f32),
     cols: u16,
     rows: u16,
-) void {
+    buf: []u8,
+    buf1: ?[][2]f32,
+) usize {
     // -1 or 1
-    const dx = p1[0] - p0[0];
-    const dy = p1[1] - p0[1];
+    const dx = v1[0] - v0[0];
+    const dy = v1[1] - v0[1];
     const step: f32 = @max(@abs(dx), @abs(dy));
-    if (step == 0) return;
+    if (step == 0) return 0;
 
     const stepX = dx / step;
     const stepY = dy / step;
 
     const half_cols = @divTrunc(cols, 2);
     const half_rows = @divTrunc(rows, 2);
+    var count: usize = 0;
 
     for (0..(@as(usize, @round(step))) + 1) |i| {
         const ii = @as(f32, @floatFromInt(i));
         const row = half_rows - @as(isize, @trunc(@round(
-            p0[1] + ii * stepY,
+            v0[1] + ii * stepY,
         )));
         const col = half_cols + @as(isize, @trunc(@round(
-            p0[0] + ii * stepX,
+            v0[0] + ii * stepX,
         )));
-        if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            buf[@intCast(row * cols + col)] = line_char;
+        buf[@intCast(row * cols + col)] = line_char;
+        if (buf1) |asd| {
+            asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
+            count += 1;
         }
+    }
+    return count;
+}
+
+fn rasterize(
+    v0: @Vector(2, f32),
+    v1: @Vector(2, f32),
+    v2: @Vector(2, f32),
+    buf: []u8,
+    cols: u16,
+    rows: u16,
+) void {
+    var len: usize = 0;
+    len += draw_line(v0, v1, cols, rows, buf, bufe[len..]);
+    len += draw_line(v1, v2, cols, rows, buf, bufe[len..]);
+    len += draw_line(v2, v0, cols, rows, buf, bufe[len..]);
+
+    const b = bufe[0..len];
+
+    std.mem.sortUnstable([2]f32, b, {}, struct {
+        fn lessThan(_: void, lhs: [2]f32, rhs: [2]f32) bool {
+            const l = @round(lhs[1]);
+            const r = @round(rhs[1]);
+            if (l != r) return l < r;
+            return lhs[0] < rhs[0];
+        }
+    }.lessThan);
+
+    // edges are sorted by Y like this
+    // (0,0) (1,0) (2,0) (3,1) (4,1) (7,1)
+    var first_i: usize = 0;
+    while (first_i < b.len) {
+        const row_key = @round(b[first_i][1]);
+        var last_i: usize = first_i + 1;
+        // only draw first and last X of the same Y.
+        while (last_i < b.len and @round(b[last_i][1]) == row_key) {
+            last_i += 1;
+        }
+        _ = draw_line(
+            @as(@Vector(2, f32), b[first_i]),
+            @as(@Vector(2, f32), b[last_i - 1]),
+            cols,
+            rows,
+            buf,
+            null,
+        );
+        first_i = last_i;
     }
 }
 
@@ -221,6 +272,17 @@ fn norm(v: anytype) @TypeOf(v) {
 }
 
 const expect = std.testing.expect;
+
+test "rasterize" {
+    // front triangle
+    const a = @Vector(2, f32){ -2, 2 };
+    const b = @Vector(2, f32){ 2, 2 };
+    const c = @Vector(2, f32){ 2, -2 };
+    const cols = 100;
+    const rows = 50;
+    var buf: [cols * rows]u8 = @splat(' ');
+    rasterize(a, b, c, &buf, cols, rows);
+}
 
 test "cull" {
     // front triangle
@@ -321,26 +383,15 @@ test "coord_to_i_1" {
     const rows = 50;
     const center = (rows / 2) * cols + (cols / 2);
     try expect(
-        coord_to_i(.{ 0, 0 }, cols, rows) == center,
+        coord_to_i(.{ 0, 0 }, cols) == center,
     );
 }
 
 test "coord_to_i_2" {
     const cols = 100;
-    const rows = 50;
-    const r = coord_to_i(.{ 49, -24 }, cols, rows);
+    const r = coord_to_i(.{ 49, -24 }, cols);
     try expect(r != null);
     try expect(r.? == 49 * 100 + 99);
-}
-
-test "coord_to_i_3" {
-    // out of bounds in every direction is null
-    const cols = 10;
-    const rows = 10;
-    try expect(coord_to_i(.{ 100, 0 }, cols, rows) == null);
-    try expect(coord_to_i(.{ -100, 0 }, cols, rows) == null);
-    try expect(coord_to_i(.{ 0, 100 }, cols, rows) == null);
-    try expect(coord_to_i(.{ 0, -100 }, cols, rows) == null);
 }
 
 test "project_z1_is_identity" {
