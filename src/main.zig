@@ -77,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var a: f32 = 0;
-    const scalar = @as(f32, @floatFromInt(winsize.col)) * 1.3;
+    const scalar = @as(f32, @floatFromInt(winsize.col)) * 0.8;
     const scale = @Vector(3, f32){ scalar, scalar * 0.5, 1 };
     var out: [mesh.len]@Vector(3, f32) = undefined;
 
@@ -105,16 +105,6 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             }
         }
-
-        // inline for (fs[0], fs[1]) |v1, v2| {
-        //     draw_line(
-        //         out[v1],
-        //         out[v2],
-        //         buf,
-        //         winsize.col,
-        //         winsize.row,
-        //     );
-        // }
 
         writer.end = buf_.len - 1;
         try writer.flush();
@@ -145,8 +135,8 @@ fn project(v: @Vector(3, f32)) @Vector(2, f32) {
 }
 
 fn move_z(v: @Vector(3, f32)) @Vector(3, f32) {
-    const d: f32 = 5;
-    return .{ v[0], v[1], v[2] - d };
+    const d: f32 = -5;
+    return .{ v[0], v[1], v[2] + d };
 }
 
 fn rotate_xz(v: @Vector(3, f32), a: f32) @Vector(3, f32) {
@@ -180,8 +170,8 @@ fn draw_line(
     const stepX = dx / step;
     const stepY = dy / step;
 
-    const half_cols = @divTrunc(cols, 2);
-    const half_rows = @divTrunc(rows, 2);
+    const half_cols: u16 = @divTrunc(cols, 2);
+    const half_rows: u16 = @divTrunc(rows, 2);
     var count: usize = 0;
 
     for (0..(@as(usize, @round(step))) + 1) |i| {
@@ -192,12 +182,15 @@ fn draw_line(
         const col = half_cols + @as(isize, @trunc(@round(
             v0[0] + ii * stepX,
         )));
-        buf[@intCast(row * cols + col)] = line_char;
-        if (buf1) |asd| {
-            asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
-            count += 1;
+        if (row >= 0 and row < rows and col >= 0 and col < cols) {
+            buf[@intCast(row * cols + col)] = line_char;
+            if (buf1) |asd| {
+                asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
+                count += 1;
+            }
         }
     }
+
     return count;
 }
 
