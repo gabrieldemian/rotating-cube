@@ -8,7 +8,7 @@ const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000.0 / @as(f32, fps)));
 const dt: f32 = 1.0 / @as(f32, fps);
 const camera = @Vector(3, f32){ 0, 0, 0 };
-const fov = math.pi / 3.0; // 60 degrees
+const fov: f32 = math.pi / 3.0;
 
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
@@ -55,39 +55,44 @@ pub fn main(init: std.process.Init) !void {
     );
     const writer = &_writer.interface;
 
-    // counter clockwise vertices
+    // counter clockwise vertices.
+    // right hand coordinates.
     const mesh = [_]@Vector(3, f32){
-        // back
+        // front
         .{ 1, 1, 1 }, // top-right
         .{ -1, 1, 1 }, //  top-left
         .{ -1, -1, 1 }, //  bottom-left
         .{ 1, -1, 1 }, //  bottom-right
-        // front
+        // back
         .{ -1, 1, -1 }, // top-right
         .{ 1, 1, -1 }, // top-left
         .{ 1, -1, -1 }, // bottom-left
         .{ -1, -1, -1 }, // bottom-right
     };
     const tris = [_][3]u8{
-        .{ 0, 1, 2 }, .{ 0, 2, 3 }, // back   (+z)
-        .{ 4, 5, 6 }, .{ 4, 6, 7 }, // front  (−z)
-        .{ 0, 3, 6 }, .{ 0, 6, 5 }, // right  (+x)
-        .{ 1, 4, 7 }, .{ 1, 7, 2 }, // left   (−x)
-        .{ 1, 0, 5 }, .{ 1, 5, 4 }, // top    (+y)
-        .{ 2, 7, 6 }, .{ 2, 6, 3 }, // bottom (−y)
+        .{ 0, 1, 2 }, .{ 0, 2, 3 },
+        .{ 4, 5, 6 }, .{ 4, 6, 7 },
+        .{ 0, 3, 6 }, .{ 0, 6, 5 },
+        .{ 1, 4, 7 }, .{ 1, 7, 2 },
+        .{ 1, 0, 5 }, .{ 1, 5, 4 },
+        .{ 2, 7, 6 }, .{ 2, 6, 3 },
     };
 
-    var a: f32 = 0;
-    const scalar = @as(f32, @floatFromInt(winsize.col)) * 0.8;
-    const scale = @Vector(3, f32){ scalar, scalar * 0.5, 1 };
+    const terminal_scale = @Vector(2, f32){ 1, 0.5 };
+    const aspect =
+        @as(f32, @floatFromInt(winsize.col)) /
+        @as(f32, @floatFromInt(winsize.row));
+
     var out: [mesh.len]@Vector(3, f32) = undefined;
+    var a: f32 = 0;
 
     while (!should_quit) {
         @memset(buf, ' ');
         a = @mod(a + 1.0 * dt, std.math.tau);
 
         inline for (mesh, 0..) |v, i| {
-            out[i] = scale * move_z(rotate_xz(v, a));
+            // ndc -1..1
+            out[i] = move_z(rotate_xz(v, a));
         }
 
         for (tris) |t| {
@@ -96,9 +101,21 @@ pub fn main(init: std.process.Init) !void {
             const t2 = out[t[2]];
             if (cull(t0, t1, t2)) {
                 _ = rasterize(
-                    weak_project(t0),
-                    weak_project(t1),
-                    weak_project(t2),
+                    screen_space(
+                        project(t0, aspect) * terminal_scale,
+                        winsize.col,
+                        winsize.row,
+                    ),
+                    screen_space(
+                        project(t1, aspect) * terminal_scale,
+                        winsize.col,
+                        winsize.row,
+                    ),
+                    screen_space(
+                        project(t2, aspect) * terminal_scale,
+                        winsize.col,
+                        winsize.row,
+                    ),
                     buf,
                     winsize.col,
                     winsize.row,
@@ -125,10 +142,20 @@ pub fn main(init: std.process.Init) !void {
 
 /// Returns true if the triangle is visible.
 fn cull(v0: @Vector(3, f32), v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
-    if (v0[2] <= 0.1 or v1[2] <= 0.1 or v2[2] <= 0.1) return false;
+    if (v0[2] >= -0.1 or v1[2] >= -0.1 or v2[2] >= -0.1) return false;
     const n = norm(cross(v1 - v0, v2 - v0));
     const cen = (v0 + v1 + v2) / @as(@Vector(3, f32), @splat(3));
     return dot(n, norm(camera - cen)) > 0;
+}
+
+/// From NDC space to screen space
+fn screen_space(ndc: @Vector(2, f32), col: u16, row: u16) @Vector(2, f32) {
+    const w: f32 = @floatFromInt(col);
+    const h: f32 = @floatFromInt(row);
+    return .{
+        ndc[0] * w,
+        ndc[1] * h,
+    };
 }
 
 // equivalent to  fov = 90° and aspect = 1
@@ -136,9 +163,35 @@ fn weak_project(v: @Vector(3, f32)) @Vector(2, f32) {
     return .{ v[0] / v[2], v[1] / -v[2] };
 }
 
+fn project(v: @Vector(3, f32), a: f32) @Vector(2, f32) {
+    const near: f32 = 1;
+    // const far = 10;
+
+    const top = near * @tan(fov / 2);
+    const bottom = -top;
+    const right = top * a;
+    const left = -right;
+
+    const x1 =
+        v[0] * (2 * near / (right - left)) +
+        v[2] * (right + left) / (right - left);
+    const y1 =
+        v[1] * (2 * near) / (top - bottom) +
+        v[2] * (top + bottom) / (top - bottom);
+    // const z1 =
+    //     v[2] * (far + near) / (near - far) +
+    //     2 * far * near / (near - far);
+    const w = -v[2];
+
+    return .{
+        x1 / w,
+        y1 / w,
+    };
+}
+
 fn move_z(v: @Vector(3, f32)) @Vector(3, f32) {
-    const d: f32 = -5;
-    return .{ v[0], v[1], v[2] - d };
+    const d: f32 = -3.5;
+    return .{ v[0], v[1], v[2] + d };
 }
 
 fn rotate_xz(v: @Vector(3, f32), a: f32) @Vector(3, f32) {
@@ -270,17 +323,17 @@ const expect = std.testing.expect;
 
 test "cull" {
     // front triangle
-    const a = @Vector(3, f32){ -3, 3, 5 };
-    const b = @Vector(3, f32){ 3, 3, 5 };
-    const c = @Vector(3, f32){ 3, -3, 5 };
+    const a = move_z(@Vector(3, f32){ 1, 1, 1 });
+    const b = move_z(@Vector(3, f32){ -1, 1, 1 });
+    const c = move_z(@Vector(3, f32){ -1, -1, 1 });
     try expect(cull(a, b, c));
 }
 
 test "cull_2" {
     // back triangle
-    const a = @Vector(3, f32){ 3, 3, 5 };
-    const b = @Vector(3, f32){ -3, 3, 5 };
-    const c = @Vector(3, f32){ -3, -3, 5 };
+    const a = @Vector(3, f32){ -3, 3, -5 };
+    const b = @Vector(3, f32){ 3, 3, -5 };
+    const c = @Vector(3, f32){ 3, -3, -5 };
     try expect(!cull(a, b, c));
     // rotated back triangle -> front triangle
     try expect(cull(
