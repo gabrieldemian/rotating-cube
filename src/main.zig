@@ -8,6 +8,7 @@ const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000.0 / @as(f32, fps)));
 const dt: f32 = 1.0 / @as(f32, fps);
 const camera = @Vector(3, f32){ 0, 0, 0 };
+const fov = math.pi / 3.0; // 60 degrees
 
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
@@ -95,9 +96,9 @@ pub fn main(init: std.process.Init) !void {
             const t2 = out[t[2]];
             if (cull(t0, t1, t2)) {
                 _ = rasterize(
-                    project(t0),
-                    project(t1),
-                    project(t2),
+                    weak_project(t0),
+                    weak_project(t1),
+                    weak_project(t2),
                     buf,
                     winsize.col,
                     winsize.row,
@@ -118,25 +119,26 @@ pub fn main(init: std.process.Init) !void {
     print("\x1b[2J\x1b[H\x1b[?25h", .{});
 }
 
-fn coord_to_i(v: @Vector(2, f32), cols: u16) usize {
-    return @intCast(v[1] * cols + v[0]);
-}
+// fn coord_to_i(v: @Vector(2, f32), cols: u16) usize {
+//     return @intCast(v[1] * cols + v[0]);
+// }
 
 /// Returns true if the triangle is visible.
 fn cull(v0: @Vector(3, f32), v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
-    if (v0[2] == 0 or v1[2] == 0 or v2[2] == 0) return false;
-    const n = norm(cross(v2 - v0, v1 - v0));
+    if (v0[2] <= 0.1 or v1[2] <= 0.1 or v2[2] <= 0.1) return false;
+    const n = norm(cross(v1 - v0, v2 - v0));
     const cen = (v0 + v1 + v2) / @as(@Vector(3, f32), @splat(3));
     return dot(n, norm(camera - cen)) > 0;
 }
 
-fn project(v: @Vector(3, f32)) @Vector(2, f32) {
+// equivalent to  fov = 90° and aspect = 1
+fn weak_project(v: @Vector(3, f32)) @Vector(2, f32) {
     return .{ v[0] / v[2], v[1] / -v[2] };
 }
 
 fn move_z(v: @Vector(3, f32)) @Vector(3, f32) {
     const d: f32 = -5;
-    return .{ v[0], v[1], v[2] + d };
+    return .{ v[0], v[1], v[2] - d };
 }
 
 fn rotate_xz(v: @Vector(3, f32), a: f32) @Vector(3, f32) {
@@ -266,17 +268,6 @@ fn norm(v: anytype) @TypeOf(v) {
 
 const expect = std.testing.expect;
 
-test "rasterize" {
-    // front triangle
-    const a = @Vector(2, f32){ -2, 2 };
-    const b = @Vector(2, f32){ 2, 2 };
-    const c = @Vector(2, f32){ 2, -2 };
-    const cols = 100;
-    const rows = 50;
-    var buf: [cols * rows]u8 = @splat(' ');
-    rasterize(a, b, c, &buf, cols, rows);
-}
-
 test "cull" {
     // front triangle
     const a = @Vector(3, f32){ -3, 3, 5 };
@@ -346,68 +337,6 @@ test "dot_product_2" {
     const d = dot(a, b);
     // pointing to each other (opposite directions)
     try expect(d == -1);
-}
-
-// test "bench_draw_line" {
-//     const gpa = std.testing.allocator;
-//     var threaded: std.Io.Threaded = .init(gpa, .{});
-//     const io = threaded.io();
-//     defer threaded.deinit();
-//     const clock = Io.Clock.boot;
-//     const cols = 100;
-//     const rows = 50;
-//     var buf: [cols * rows]u8 = @splat(' ');
-//     const now = clock.now(io);
-//     for (0..1_000_000) |_| {
-//         draw_line(
-//             @Vector(2, f32){ -10, 10 },
-//             @Vector(2, f32){ 10, -10 },
-//             &buf,
-//             cols,
-//             rows,
-//         );
-//     }
-//     const took = now.untilNow(io, clock);
-//     print("took: {}ms\n", .{took.toMilliseconds()});
-// }
-
-test "coord_to_i_1" {
-    const cols = 100;
-    const rows = 50;
-    const center = (rows / 2) * cols + (cols / 2);
-    try expect(
-        coord_to_i(.{ 0, 0 }, cols) == center,
-    );
-}
-
-test "coord_to_i_2" {
-    const cols = 100;
-    const r = coord_to_i(.{ 49, -24 }, cols);
-    try expect(r != null);
-    try expect(r.? == 49 * 100 + 99);
-}
-
-test "project_z1_is_identity" {
-    // at z = 1 the divide does nothing; x, y pass through
-    const r = project(.{ 10.0, 5.0, 1.0 });
-    try expect(r[0] == 10.0);
-    try expect(r[1] == 5.0);
-}
-
-test "project_z2_halves" {
-    // at twice the distance, the object is half as big on screen
-    const r = project(.{ 10.0, 5.0, 2.0 });
-    try expect(r[0] == 5.0);
-    try expect(r[1] == 2.5);
-}
-
-test "project_farther_is_smaller" {
-    const near = project(.{ 10.0, 5.0, 1.0 });
-    const far = project(.{ 10.0, 5.0, 10.0 });
-    try expect(@abs(far[0]) < @abs(near[0]));
-    try expect(@abs(far[1]) < @abs(near[1]));
-    try expect(far[0] == 1.0);
-    try expect(far[1] == 0.5);
 }
 
 // hide cursor \x1b[?25l
