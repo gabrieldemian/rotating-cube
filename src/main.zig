@@ -10,16 +10,20 @@ const Vec3 = @Vector(3, f32);
 /// Units per second
 const move_per_key = 0.2;
 const angle_per_key = 0.1;
-const line_char: u8 = '.';
+const line_char: u8 = '#';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
 const camera = Vec3{ 0, 0, 0 };
 const fov: f32 = math.pi / 3.0;
 
+var cols: u16 = 50;
+var rows: u16 = 50;
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
 var fpsbuf: [6]u8 = undefined;
-var stdinbuf: [16]u8 = undefined;
+// terminal only sends 1 char at a time,
+// TODO: support kitty keyboard protocol
+var stdinbuf: [1]u8 = undefined;
 
 fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
     should_quit = true;
@@ -43,24 +47,27 @@ pub fn main(init: std.process.Init) !void {
     // remove kitty keyboard protocol flag
     defer print("\x1b[2J\x1b[H\x1b[?25h\x1b[<u", .{});
 
-    var winsize: std.posix.winsize = undefined;
     const stdout = Io.File.stdout();
     const stdin = Io.File.stdin();
-
+    var winsize: std.posix.winsize = undefined;
     _ = std.posix.system.ioctl(
         stdout.handle,
         std.posix.T.IOCGWINSZ,
         @intFromPtr(&winsize),
     );
+    cols = winsize.col;
+    rows = winsize.row;
 
     const arena: std.mem.Allocator = init.arena.allocator();
     // extra 3 for clear ANSI
-    var buf_ = try arena.alloc(u8, winsize.col * winsize.row + 3);
-    buf_[0] = '\x1b';
-    buf_[1] = '[';
-    buf_[2] = 'H';
+    // extra 6 for color codes
+    var buf_ = try arena.alloc(
+        u8,
+        (winsize.col * @as(usize, winsize.row) * 6) + 3,
+    );
+    buf_[0..3].* = [3]u8{ '\x1b', '[', 'H' };
     const buf = buf_[3..];
-    @memset(buf, ' ');
+
     var _writer: Io.File.Writer = .init(
         stdout,
         init.io,
@@ -125,10 +132,13 @@ pub fn main(init: std.process.Init) !void {
         const now = clock.now(init.io);
         last = now;
 
-        @memset(buf, ' ');
-        buf[buf.len - 4] = 'F';
-        buf[buf.len - 3] = 'P';
-        buf[buf.len - 2] = 'S';
+        for (0..@as(usize, winsize.row) * winsize.col) |i| {
+            put_cell(buf, i, ' ');
+        }
+
+        put_cell(buf, (winsize.col * winsize.row) - 3, 'F');
+        put_cell(buf, (winsize.col * winsize.row) - 2, 'P');
+        put_cell(buf, (winsize.col * winsize.row) - 1, 'S');
         a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
@@ -170,24 +180,10 @@ pub fn main(init: std.process.Init) !void {
             const t2 = out[t[2]];
             if (is_visible(t0, t1, t2)) {
                 _ = rasterize(
-                    screen_space(
-                        project(t0, aspect) * terminal_scale,
-                        winsize.col,
-                        winsize.row,
-                    ),
-                    screen_space(
-                        project(t1, aspect) * terminal_scale,
-                        winsize.col,
-                        winsize.row,
-                    ),
-                    screen_space(
-                        project(t2, aspect) * terminal_scale,
-                        winsize.col,
-                        winsize.row,
-                    ),
+                    screen_space(project(t0, aspect) * terminal_scale),
+                    screen_space(project(t1, aspect) * terminal_scale),
+                    screen_space(project(t2, aspect) * terminal_scale),
                     buf,
-                    winsize.col,
-                    winsize.row,
                 );
                 continue;
             }
@@ -203,11 +199,12 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
+        const total: usize = @as(usize, winsize.col) * winsize.row;
         for (num, 0..) |n, i| {
-            buf[(buf.len - fpsbuf.len - 5) + i] = n;
+            put_cell(buf, total - num.len - 4 + i, n);
         }
 
-        writer.end = buf_.len - 1;
+        writer.end = buf_.len;
         try writer.flush();
         try init.io.sleep(
             Io.Duration.fromMilliseconds(ms_to_sleep),
@@ -215,10 +212,6 @@ pub fn main(init: std.process.Init) !void {
         );
     }
 }
-
-// fn coord_to_i(v: Vec2, cols: u16) usize {
-//     return @intCast(v[1] * cols + v[0]);
-// }
 
 /// Returns true if the triangle is visible.
 fn is_visible(v0: Vec3, v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
@@ -229,9 +222,9 @@ fn is_visible(v0: Vec3, v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
 }
 
 /// From NDC space to screen space
-fn screen_space(ndc: Vec2, col: u16, row: u16) @Vector(2, f32) {
-    const w: f32 = @floatFromInt(col);
-    const h: f32 = @floatFromInt(row);
+fn screen_space(ndc: Vec2) @Vector(2, f32) {
+    const w: f32 = @floatFromInt(cols);
+    const h: f32 = @floatFromInt(rows);
     return .{
         ndc[0] * w,
         ndc[1] * h,
@@ -313,12 +306,9 @@ var cha = std.Random.DefaultPrng.init(0);
 const rand = cha.random();
 
 /// Draw line calculating slope and diffs.
-/// Assumes the line is visible.
 fn draw_line(
     v0: Vec2,
     v1: Vec2,
-    cols: u16,
-    rows: u16,
     buf: []u8,
     buf1: ?[][2]f32,
 ) usize {
@@ -333,21 +323,20 @@ fn draw_line(
 
     const half_cols: u16 = @divTrunc(cols, 2);
     const half_rows: u16 = @divTrunc(rows, 2);
-    // const newchar = rand.intRangeAtMost(u8, 33, 126);
     var count: usize = 0;
 
     for (0..(@as(usize, @round(step))) + 1) |i| {
         const ii = @as(f32, @floatFromInt(i));
-        const row = half_rows - @as(isize, @trunc(@round(
+        const row = half_rows - @as(isize, @round(
             v0[1] + ii * stepY,
-        )));
-        const col = half_cols + @as(isize, @trunc(@round(
+        ));
+        const col = half_cols + @as(isize, @round(
             v0[0] + ii * stepX,
-        )));
+        ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            buf[@intCast(row * cols + col)] = line_char;
+            const iii: usize = @intCast(row * cols + col);
+            put_cell(buf, iii, line_char);
             if (buf1) |asd| {
-                buf[@intCast(row * cols + col)] = line_char;
                 asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
                 count += 1;
             }
@@ -362,13 +351,11 @@ fn rasterize(
     v1: Vec2,
     v2: Vec2,
     buf: []u8,
-    cols: u16,
-    rows: u16,
 ) void {
     var len: usize = 0;
-    len += draw_line(v0, v1, cols, rows, buf, bufe[len..]);
-    len += draw_line(v1, v2, cols, rows, buf, bufe[len..]);
-    len += draw_line(v2, v0, cols, rows, buf, bufe[len..]);
+    len += draw_line(v0, v1, buf, bufe[len..]);
+    len += draw_line(v1, v2, buf, bufe[len..]);
+    len += draw_line(v2, v0, buf, bufe[len..]);
 
     const b = bufe[0..len];
 
@@ -394,8 +381,6 @@ fn rasterize(
         _ = draw_line(
             @as(Vec2, b[first_i]),
             @as(Vec2, b[last_i - 1]),
-            cols,
-            rows,
             buf,
             null,
         );
@@ -427,13 +412,27 @@ fn norm(v: anytype) @TypeOf(v) {
     return v / @as(@TypeOf(v), @splat(magnitude(v)));
 }
 
+/// Put a logical cell `i` in the screen
+fn put_cell(buf: []u8, i: usize, char: u8) void {
+    if (cols == 0) return;
+    const offset: usize = i * 6;
+    if (offset > buf.len) return;
+
+    buf[offset + 0] = '\x1b';
+    buf[offset + 1] = '[';
+    buf[offset + 2] = '3';
+    buf[offset + 3] = '4'; // blue foreground
+    buf[offset + 4] = 'm';
+    buf[offset + 5] = char;
+}
+
 const expect = std.testing.expect;
 
 test "cull" {
     // front triangle
-    const a = move_z(Vec3{ 1, 1, 1 });
-    const b = move_z(Vec3{ -1, 1, 1 });
-    const c = move_z(Vec3{ -1, -1, 1 });
+    const a = move_z(Vec3{ 1, 1, 1 }, -3.5);
+    const b = move_z(Vec3{ -1, 1, 1 }, -3.5);
+    const c = move_z(Vec3{ -1, -1, 1 }, -3.5);
     try expect(is_visible(a, b, c));
 }
 
