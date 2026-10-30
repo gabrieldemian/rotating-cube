@@ -2,10 +2,14 @@ const std = @import("std");
 const Io = std.Io;
 const math = std.math;
 const print = std.debug.print;
+const posix = std.posix;
 
 const Vec2 = @Vector(2, f32);
 const Vec3 = @Vector(3, f32);
 
+/// Units per second
+const move_per_key = 0.2;
+const angle_per_key = 0.1;
 const line_char: u8 = '.';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
@@ -14,7 +18,8 @@ const fov: f32 = math.pi / 3.0;
 
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
-var fpsbuf: [6]u8 = @splat(0);
+var fpsbuf: [6]u8 = undefined;
+var stdinbuf: [16]u8 = undefined;
 
 fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
     should_quit = true;
@@ -34,8 +39,13 @@ pub fn main(init: std.process.Init) !void {
     // hide cursor
     print("\x1b[?25l", .{});
 
+    // show cursor, clear screen, place cursor at the top,
+    // remove kitty keyboard protocol flag
+    defer print("\x1b[2J\x1b[H\x1b[?25h\x1b[<u", .{});
+
     var winsize: std.posix.winsize = undefined;
     const stdout = Io.File.stdout();
+    const stdin = Io.File.stdin();
 
     _ = std.posix.system.ioctl(
         stdout.handle,
@@ -86,18 +96,33 @@ pub fn main(init: std.process.Init) !void {
         @as(f32, @floatFromInt(winsize.col)) /
         @as(f32, @floatFromInt(winsize.row));
 
+    const clock = std.Io.Clock.boot;
+    var last = clock.now(init.io);
+    var frames: u32 = 0;
+    var fps_ns: u32 = 0;
+
+    const orig = try posix.tcgetattr(posix.STDIN_FILENO);
+    var raw = orig;
+    raw.lflag.ICANON = false;
+    raw.lflag.ECHO = false;
+    raw.iflag.IXON = false;
+    raw.cc[@backingInt(posix.V.MIN)] = 0;
+    raw.cc[@backingInt(posix.V.TIME)] = 0;
+    try posix.tcsetattr(posix.STDIN_FILENO, .NOW, raw);
+    defer posix.tcsetattr(posix.STDIN_FILENO, .NOW, orig) catch {};
+
+    var last_fps: u64 = 0;
+    var translate: Vec3 = .{ 0, 0, -3.5 };
+    var yaw_a: f32 = 0;
+    var pitch_a: f32 = 0;
     var out: [mesh.len]Vec3 = undefined;
     var a: f32 = 0;
 
-    const clock = std.Io.Clock.boot;
-    var last = clock.now(init.io).toNanoseconds();
-    var frames: u32 = 0;
-    var fps_ns: i96 = 0;
-
     while (!should_quit) {
-        const now = clock.now(init.io).toNanoseconds();
-        const frame_ns = now - last;
-        const dt = @as(f32, @floatFromInt(frame_ns)) / 1e9;
+        const fr_until_now = last.untilNow(init.io, clock);
+        const dt = @as(f32, @floatFromInt(fr_until_now.toNanoseconds())) /
+            1_000_000_000;
+        const now = clock.now(init.io);
         last = now;
 
         @memset(buf, ' ');
@@ -107,7 +132,36 @@ pub fn main(init: std.process.Init) !void {
         a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
-            out[i] = move_z(yaw(v, a));
+            out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
+        }
+
+        const inread = stdin.readStreaming(
+            init.io,
+            &[_][]u8{&stdinbuf},
+        ) catch |e| switch (e) {
+            error.WouldBlock => 0,
+            error.EndOfStream => 0,
+            else => return e,
+        };
+        if (inread > 0) {
+            const keys = stdinbuf[0..inread];
+            const d = move_per_key;
+            for (keys) |key| {
+                switch (key) {
+                    // move
+                    'w' => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
+                    'a' => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
+                    's' => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
+                    'd' => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
+                    'q' => translate += Vec3{ 0, d, 0 },
+                    ' ' => translate += Vec3{ 0, -d, 0 },
+                    'h' => yaw_a += angle_per_key,
+                    'l' => yaw_a -= angle_per_key,
+                    'j' => pitch_a -= angle_per_key,
+                    'k' => pitch_a += angle_per_key,
+                    else => {},
+                }
+            }
         }
 
         for (tris) |t| {
@@ -140,30 +194,26 @@ pub fn main(init: std.process.Init) !void {
         }
 
         frames += 1;
-        fps_ns += frame_ns;
+        fps_ns += @intCast(fr_until_now.toNanoseconds());
 
-        const fpss: u32 = @round(@as(f32, @floatFromInt(frames)) /
-            (@as(f32, @floatFromInt(fps_ns)) / 1e9));
-        const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{fpss % 1_000_000});
-        for (num, 0..) |n, i| {
-            buf[(buf.len - fpsbuf.len - 5) + i] = n;
-        }
-
-        if (fps_ns >= 500_000_000) { // 0.5 s window
+        if (fps_ns >= 500) {
+            last_fps = (frames * 1_000_000_000) / fps_ns;
             frames = 0;
             fps_ns = 0;
         }
 
+        const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
+        for (num, 0..) |n, i| {
+            buf[(buf.len - fpsbuf.len - 5) + i] = n;
+        }
+
         writer.end = buf_.len - 1;
         try writer.flush();
-        // try init.io.sleep(
-        //     Io.Duration.fromMilliseconds(ms_to_sleep),
-        //     Io.Clock.boot,
-        // );
+        try init.io.sleep(
+            Io.Duration.fromMilliseconds(ms_to_sleep),
+            Io.Clock.boot,
+        );
     }
-
-    // show cursor, clear screen, place cursor at the top
-    print("\x1b[2J\x1b[H\x1b[?25h", .{});
 }
 
 // fn coord_to_i(v: Vec2, cols: u16) usize {
@@ -195,7 +245,7 @@ fn weak_project(v: Vec3) Vec2 {
 
 /// Project vector and return NDC
 fn project(v: Vec3, a: f32) Vec2 {
-    const near: f32 = 1;
+    const near: f32 = 0.1;
     // const far = 10;
 
     const top = near * @tan(fov / 2);
@@ -222,33 +272,38 @@ fn project(v: Vec3, a: f32) Vec2 {
     };
 }
 
-fn move_z(v: Vec3) @Vector(3, f32) {
-    const d: f32 = -3.5;
+fn move_z(v: Vec3, d: f32) Vec3 {
     return .{ v[0], v[1], v[2] + d };
 }
 
 /// Rotate around Y
-fn yaw(v: Vec3, a: f32) @Vector(3, f32) {
+fn yaw(v: Vec3, a: f32) Vec3 {
+    const sin = @sin(a);
+    const cos = @cos(a);
+    return .{ v[0] * cos + v[2] * sin, v[1], -v[0] * sin + v[2] * cos };
+}
+
+fn yaw_at(v: Vec3, a: f32) Vec3 {
     const sin = @sin(a);
     const cos = @cos(a);
     return .{ v[0] * cos + v[2] * sin, v[1], -v[0] * sin + v[2] * cos };
 }
 
 /// Rotate around X
-fn pitch(v: Vec3, a: f32) @Vector(3, f32) {
+fn pitch(v: Vec3, a: f32) Vec3 {
     const sin = @sin(a);
     const cos = @cos(a);
     return .{ v[0], v[1] * cos - v[2] * sin, v[1] * sin + v[2] * cos };
 }
 
 /// Rotate around Z
-fn roll(v: Vec3, a: f32) @Vector(3, f32) {
+fn roll(v: Vec3, a: f32) Vec3 {
     const sin = @sin(a);
     const cos = @cos(a);
     return .{ v[0] * cos - v[1] * sin, v[0] * sin + v[1] * cos, v[2] };
 }
 
-fn rotate_y(v: Vec3, a: f32) @Vector(3, f32) {
+fn rotate_y(v: Vec3, a: f32) Vec3 {
     const sin = @sin(a);
     const cos = @cos(a);
     return .{ v[0], v[1] * cos - v[2] * sin, v[2] };
@@ -278,7 +333,7 @@ fn draw_line(
 
     const half_cols: u16 = @divTrunc(cols, 2);
     const half_rows: u16 = @divTrunc(rows, 2);
-    const newchar = rand.intRangeAtMost(u8, 33, 126);
+    // const newchar = rand.intRangeAtMost(u8, 33, 126);
     var count: usize = 0;
 
     for (0..(@as(usize, @round(step))) + 1) |i| {
@@ -290,8 +345,9 @@ fn draw_line(
             v0[0] + ii * stepX,
         )));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            buf[@intCast(row * cols + col)] = newchar;
+            buf[@intCast(row * cols + col)] = line_char;
             if (buf1) |asd| {
+                buf[@intCast(row * cols + col)] = line_char;
                 asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
                 count += 1;
             }
@@ -358,7 +414,7 @@ fn dot(a: anytype, b: anytype) f32 {
 }
 
 /// a × b
-fn cross(a: Vec3, b: @Vector(3, f32)) @Vector(3, f32) {
+fn cross(a: Vec3, b: Vec3) Vec3 {
     return .{
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
