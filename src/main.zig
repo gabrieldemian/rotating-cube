@@ -21,6 +21,7 @@ var cols: u16 = 50;
 var rows: u16 = 50;
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
+var cleared_framebuf: [4096 * 20]u8 = undefined;
 var fpsbuf: [6]u8 = undefined;
 // terminal only sends 1 char at a time,
 // TODO: support kitty keyboard protocol
@@ -126,6 +127,11 @@ pub fn main(init: std.process.Init) !void {
     var out: [mesh.len]Vec3 = undefined;
     var a: f32 = 0;
 
+    const cleared = cleared_framebuf[0..buf.len];
+    for (0..@as(usize, winsize.row) * winsize.col) |i| {
+        put_cell2(cleared, i, ' ', .{ .r = 0, .g = 0, .b = 0 });
+    }
+
     while (!should_quit) {
         const fr_until_now = last.untilNow(init.io, clock);
         const dt = @as(f32, @floatFromInt(fr_until_now.toNanoseconds())) /
@@ -133,9 +139,7 @@ pub fn main(init: std.process.Init) !void {
         const now = clock.now(init.io);
         last = now;
 
-        for (0..@as(usize, winsize.row) * winsize.col) |i| {
-            put_cell2(buf, i, ' ', .{ .r = 200, .g = 50, .b = 50 });
-        }
+        @memcpy(buf, cleared);
 
         put_cell2(
             buf,
