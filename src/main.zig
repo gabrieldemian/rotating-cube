@@ -21,7 +21,7 @@ var cols: u16 = 50;
 var rows: u16 = 50;
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
-var cleared_framebuf: [4096 * 20]u8 = undefined;
+var cleared_framebuf: [4096 * 50]u8 = undefined;
 var fpsbuf: [6]u8 = undefined;
 // terminal only sends 1 char at a time,
 // TODO: support kitty keyboard protocol
@@ -42,13 +42,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.posix.sigaction(std.posix.SIG.INT, &action, null);
 
-    // hide cursor
-    print("\x1b[?25l", .{});
-
-    // show cursor, clear screen, place cursor at the top,
-    // remove kitty keyboard protocol flag
-    defer print("\x1b[2J\x1b[H\x1b[?25h\x1b[<u", .{});
-
     const stdout = Io.File.stdout();
     const stdin = Io.File.stdin();
     var winsize: std.posix.winsize = undefined;
@@ -59,6 +52,13 @@ pub fn main(init: std.process.Init) !void {
     );
     cols = winsize.col;
     rows = winsize.row;
+
+    // hide cursor
+    try stdout.writeStreamingAll(init.io, "\x1b[?25l");
+
+    // show cursor, clear screen, place cursor at the top,
+    // remove kitty keyboard protocol flag
+    defer stdout.writeStreamingAll(init.io, "\x1b[2J\x1b[H\x1b[?25h\x1b[<u") catch {};
 
     const arena: std.mem.Allocator = init.arena.allocator();
     // extra 3 for clear ANSI
@@ -120,16 +120,18 @@ pub fn main(init: std.process.Init) !void {
     try posix.tcsetattr(posix.STDIN_FILENO, .NOW, raw);
     defer posix.tcsetattr(posix.STDIN_FILENO, .NOW, orig) catch {};
 
-    var last_fps: u64 = 0;
+    // state of the cube
     var translate: Vec3 = .{ 0, 0, -3.5 };
     var yaw_a: f32 = 0;
     var pitch_a: f32 = 0;
+
     var out: [mesh.len]Vec3 = undefined;
+    var last_fps: u64 = 0;
     var a: f32 = 0;
 
     const cleared = cleared_framebuf[0..buf.len];
     for (0..@as(usize, winsize.row) * winsize.col) |i| {
-        put_cell2(cleared, i, ' ', .{ .r = 0, .g = 0, .b = 0 });
+        put_cell2(cleared, i, ' ', .{ 0, 0, 0 });
     }
 
     while (!should_quit) {
@@ -141,24 +143,9 @@ pub fn main(init: std.process.Init) !void {
 
         @memcpy(buf, cleared);
 
-        put_cell2(
-            buf,
-            (winsize.col * winsize.row) - 3,
-            'F',
-            .{ .r = 165, .g = 119, .b = 202 },
-        );
-        put_cell2(
-            buf,
-            (winsize.col * winsize.row) - 2,
-            'P',
-            .{ .r = 165, .g = 119, .b = 202 },
-        );
-        put_cell2(
-            buf,
-            (winsize.col * winsize.row) - 1,
-            'S',
-            .{ .r = 165, .g = 119, .b = 202 },
-        );
+        put_cell2(buf, 0, 'F', .{ 165, 119, 202 });
+        put_cell2(buf, 1, 'P', .{ 165, 119, 202 });
+        put_cell2(buf, 2, 'S', .{ 165, 119, 202 });
         a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
@@ -199,12 +186,14 @@ pub fn main(init: std.process.Init) !void {
             const t1 = out[t[1]];
             const t2 = out[t[2]];
             if (is_visible(t0, t1, t2)) {
-                _ = rasterize(
+                _ = rasterize2(
                     screen_space(project(t0, aspect) * terminal_scale),
                     screen_space(project(t1, aspect) * terminal_scale),
                     screen_space(project(t2, aspect) * terminal_scale),
                     buf,
                 );
+                // std.mem.swap(RGB, &pair_to_lerp[0], &pair_to_lerp[1]);
+                // pair_to_lerp = .{ BLUE, RED };
                 continue;
             }
         }
@@ -220,14 +209,9 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
-        const total: usize = @as(usize, winsize.col) * winsize.row;
         for (num, 0..) |n, i| {
-            put_cell2(
-                buf,
-                total - num.len - 4 + i,
-                n,
-                .{ .r = 210, .g = 170, .b = 85 },
-            );
+            // 4 = FPS len + 1 space
+            put_cell2(buf, 4 + i, n, .{ 210, 170, 85 });
         }
 
         writer.end = buf_.len;
@@ -328,8 +312,7 @@ fn rotate_y(v: Vec3, a: f32) Vec3 {
     return .{ v[0], v[1] * cos - v[2] * sin, v[2] };
 }
 
-var cha = std.Random.DefaultPrng.init(0);
-const rand = cha.random();
+var pair_to_lerp = [2]RGB{ GREEN, RED };
 
 /// Draw line calculating slope and diffs.
 fn draw_line(
@@ -337,6 +320,7 @@ fn draw_line(
     v1: Vec2,
     buf: []u8,
     buf1: ?[][2]f32,
+    pair: [2]RGB,
 ) usize {
     // -1 or 1
     const dx = v1[0] - v0[0];
@@ -361,15 +345,69 @@ fn draw_line(
         ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
             const iii: usize = @intCast(row * cols + col);
-            put_cell2(buf, iii, line_char, .{ .r = 92, .g = 113, .b = 216 });
+            const lerped = @round(
+                math.lerp(
+                    pair[0],
+                    pair[1],
+                    @as(RGB, @splat(ii / (step + 1))),
+                ),
+            );
+
+            put_cell2(buf, iii, line_char, lerped);
+
             if (buf1) |asd| {
-                asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
+                asd[count] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
                 count += 1;
             }
         }
     }
 
     return count;
+}
+
+fn edge_cross(
+    a: Vec2,
+    b: Vec2,
+    p: Vec2,
+) f32 {
+    const ab: Vec2 = .{ b[0] - a[0], b[1] - a[1] };
+    const ap: Vec2 = .{ p[0] - a[0], p[1] - a[1] };
+    return ab[0] * ap[1] - ab[1] * ap[0];
+}
+
+fn rasterize2(
+    v0: Vec2,
+    v1: Vec2,
+    v2: Vec2,
+    buf: []u8,
+) void {
+    const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
+    const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
+    const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
+    const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
+
+    const half_cols: i32 = cols / 2;
+    const half_rows: i32 = rows / 2;
+
+    var y = y_min;
+    while (y < y_max) : (y += 1) {
+        const yy: f32 = @floatFromInt(y);
+        const row: i32 = half_rows - y;
+        var x = x_min;
+        while (x < x_max) : (x += 1) {
+            if (half_cols + x < 0) continue;
+            const col: usize = @intCast(half_cols + x);
+            if (row < 0 or row >= rows or col >= cols) continue;
+            const xx: f32 = @floatFromInt(x);
+            const i: usize = @as(usize, @intCast(row)) * cols + col;
+            if (edge_cross(v1, v2, @as(Vec2, .{ xx, yy })) >= 0 and
+                edge_cross(v2, v0, @as(Vec2, .{ xx, yy })) >= 0 and
+                edge_cross(v0, v1, @as(Vec2, .{ xx, yy })) >= 0)
+            {
+                put_cell2(buf, i, line_char, RED);
+            }
+        }
+    }
 }
 
 fn rasterize(
@@ -379,9 +417,9 @@ fn rasterize(
     buf: []u8,
 ) void {
     var len: usize = 0;
-    len += draw_line(v0, v1, buf, bufe[len..]);
-    len += draw_line(v1, v2, buf, bufe[len..]);
-    len += draw_line(v2, v0, buf, bufe[len..]);
+    len += draw_line(v0, v1, buf, bufe[len..], pair_to_lerp);
+    len += draw_line(v1, v2, buf, bufe[len..], pair_to_lerp);
+    len += draw_line(v2, v0, buf, bufe[len..], pair_to_lerp);
 
     const b = bufe[0..len];
 
@@ -397,6 +435,9 @@ fn rasterize(
     // edges are sorted by Y like this
     // (0,0) (1,0) (2,0) (3,1) (4,1) (7,1)
     var first_i: usize = 0;
+    var i: f32 = 0;
+    var oldpair = pair_to_lerp;
+
     while (first_i < b.len) {
         const row_key = @round(b[first_i][1]);
         var last_i: usize = first_i + 1;
@@ -404,13 +445,21 @@ fn rasterize(
         while (last_i < b.len and @round(b[last_i][1]) == row_key) {
             last_i += 1;
         }
+        const step: RGB = @splat(i / 31);
+        oldpair = .{
+            @round(math.lerp(pair_to_lerp[0], BLUE, step)),
+            @round(math.lerp(pair_to_lerp[1], BLUE, step)),
+        };
+        // print("{} old pair {any}\n", .{step, oldpair});
         _ = draw_line(
             @as(Vec2, b[first_i]),
             @as(Vec2, b[last_i - 1]),
             buf,
             null,
+            oldpair,
         );
         first_i = last_i;
+        i += 1;
     }
 }
 
@@ -446,19 +495,23 @@ fn put_cell(buf: []u8, i: usize, char: u8) void {
     buf[offset..][0..cell_size].* = .{ 0x1b, '[', '3', '4', 'm', char };
 }
 
-const RGB = struct { r: u8, g: u8, b: u8 };
+const RGB = Vec3;
+const RED: RGB = .{ 255, 0, 0 };
+const GREEN: RGB = .{ 0, 255, 0 };
+const BLUE: RGB = .{ 0, 0, 255 };
 
 // \x1b[38;2;25;10;200mtext_go_here
 fn put_cell2(buf: []u8, i: usize, char: u8, rgb: RGB) void {
     const offset: usize = i * cell_size;
+    if (offset > buf.len) return;
     buf[offset..][0..7].* = .{ 0x1b, '[', '3', '8', ';', '2', ';' };
     buf[offset..][10..11].* = .{';'};
     buf[offset..][14..15].* = .{';'};
     buf[offset..][18..19].* = .{'m'};
     buf[offset..][19..20].* = .{char};
-    _ = std.mem.print(buf[offset..][7..10], "{d:0>3}", .{rgb.r}) catch unreachable;
-    _ = std.mem.print(buf[offset..][11..14], "{d:0>3}", .{rgb.g}) catch unreachable;
-    _ = std.mem.print(buf[offset..][15..18], "{d:0>3}", .{rgb.b}) catch unreachable;
+    _ = std.mem.print(buf[offset..][7..10], "{d:0>3}", .{rgb[0]}) catch unreachable;
+    _ = std.mem.print(buf[offset..][11..14], "{d:0>3}", .{rgb[1]}) catch unreachable;
+    _ = std.mem.print(buf[offset..][15..18], "{d:0>3}", .{rgb[2]}) catch unreachable;
 }
 
 const expect = std.testing.expect;
