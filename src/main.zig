@@ -15,6 +15,7 @@ const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
 const camera = Vec3{ 0, 0, 0 };
 const fov: f32 = math.pi / 3.0;
+const cell_size = 6;
 
 var cols: u16 = 50;
 var rows: u16 = 50;
@@ -63,9 +64,9 @@ pub fn main(init: std.process.Init) !void {
     // extra 6 for color codes
     var buf_ = try arena.alloc(
         u8,
-        (winsize.col * @as(usize, winsize.row) * 6) + 3,
+        (winsize.col * @as(usize, winsize.row) * cell_size) + 3,
     );
-    buf_[0..3].* = [3]u8{ '\x1b', '[', 'H' };
+    buf_[0..3].* = [3]u8{ 0x1b, '[', 'H' };
     const buf = buf_[3..];
 
     var _writer: Io.File.Writer = .init(
@@ -412,18 +413,12 @@ fn norm(v: anytype) @TypeOf(v) {
     return v / @as(@TypeOf(v), @splat(magnitude(v)));
 }
 
-/// Put a logical cell `i` in the screen
+/// Put a logical cell `i` on the screen
 fn put_cell(buf: []u8, i: usize, char: u8) void {
     if (cols == 0) return;
-    const offset: usize = i * 6;
+    const offset: usize = i * cell_size;
     if (offset > buf.len) return;
-
-    buf[offset + 0] = '\x1b';
-    buf[offset + 1] = '[';
-    buf[offset + 2] = '3';
-    buf[offset + 3] = '4'; // blue foreground
-    buf[offset + 4] = 'm';
-    buf[offset + 5] = char;
+    buf[offset..][0..cell_size].* = .{ 0x1b, '[', '3', '4', 'm', char };
 }
 
 const expect = std.testing.expect;
@@ -514,3 +509,19 @@ test "dot_product_2" {
 
 // writes hello at the same position if called in a loop
 // \x1b[Hhello
+
+// true color
+//
+// background = 19 bytes
+// \x1b[48;2;025;010;200mTRUECOLOR
+//
+// foreground
+// \x1b[38;2;25;10;200mTRUECOLOR
+//
+// ";2" means
+// 2 = direct color / RGB
+// 5 = indexed palette index 0..255 color
+// 3 = CMY
+// 4 = CMYK
+//
+// ";38" means
