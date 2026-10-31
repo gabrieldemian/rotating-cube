@@ -15,7 +15,7 @@ const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
 const camera = Vec3{ 0, 0, 0 };
 const fov: f32 = math.pi / 3.0;
-const cell_size = 6;
+const cell_size = 20;
 
 var cols: u16 = 50;
 var rows: u16 = 50;
@@ -106,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
 
     const clock = std.Io.Clock.boot;
     var last = clock.now(init.io);
-    var frames: u32 = 0;
+    var frames: u64 = 0;
     var fps_ns: u32 = 0;
 
     const orig = try posix.tcgetattr(posix.STDIN_FILENO);
@@ -134,12 +134,27 @@ pub fn main(init: std.process.Init) !void {
         last = now;
 
         for (0..@as(usize, winsize.row) * winsize.col) |i| {
-            put_cell(buf, i, ' ');
+            put_cell2(buf, i, ' ', .{ .r = 200, .g = 50, .b = 50 });
         }
 
-        put_cell(buf, (winsize.col * winsize.row) - 3, 'F');
-        put_cell(buf, (winsize.col * winsize.row) - 2, 'P');
-        put_cell(buf, (winsize.col * winsize.row) - 1, 'S');
+        put_cell2(
+            buf,
+            (winsize.col * winsize.row) - 3,
+            'F',
+            .{ .r = 165, .g = 119, .b = 202 },
+        );
+        put_cell2(
+            buf,
+            (winsize.col * winsize.row) - 2,
+            'P',
+            .{ .r = 165, .g = 119, .b = 202 },
+        );
+        put_cell2(
+            buf,
+            (winsize.col * winsize.row) - 1,
+            'S',
+            .{ .r = 165, .g = 119, .b = 202 },
+        );
         a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
@@ -152,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
         ) catch |e| switch (e) {
             error.WouldBlock => 0,
             error.EndOfStream => 0,
-            else => return e,
+            else => 0, // TODO: handle errors?
         };
         if (inread > 0) {
             const keys = stdinbuf[0..inread];
@@ -193,7 +208,8 @@ pub fn main(init: std.process.Init) !void {
         frames += 1;
         fps_ns += @intCast(fr_until_now.toNanoseconds());
 
-        if (fps_ns >= 500) {
+        // 500ms in ns
+        if (fps_ns >= 500_000_000) {
             last_fps = (frames * 1_000_000_000) / fps_ns;
             frames = 0;
             fps_ns = 0;
@@ -202,15 +218,20 @@ pub fn main(init: std.process.Init) !void {
         const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
         const total: usize = @as(usize, winsize.col) * winsize.row;
         for (num, 0..) |n, i| {
-            put_cell(buf, total - num.len - 4 + i, n);
+            put_cell2(
+                buf,
+                total - num.len - 4 + i,
+                n,
+                .{ .r = 210, .g = 170, .b = 85 },
+            );
         }
 
         writer.end = buf_.len;
         try writer.flush();
-        try init.io.sleep(
-            Io.Duration.fromMilliseconds(ms_to_sleep),
-            Io.Clock.boot,
-        );
+        // try init.io.sleep(
+        //     Io.Duration.fromMilliseconds(ms_to_sleep),
+        //     Io.Clock.boot,
+        // );
     }
 }
 
@@ -336,7 +357,7 @@ fn draw_line(
         ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
             const iii: usize = @intCast(row * cols + col);
-            put_cell(buf, iii, line_char);
+            put_cell2(buf, iii, line_char, .{ .r = 92, .g = 113, .b = 216 });
             if (buf1) |asd| {
                 asd[i] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
                 count += 1;
@@ -419,6 +440,21 @@ fn put_cell(buf: []u8, i: usize, char: u8) void {
     const offset: usize = i * cell_size;
     if (offset > buf.len) return;
     buf[offset..][0..cell_size].* = .{ 0x1b, '[', '3', '4', 'm', char };
+}
+
+const RGB = struct { r: u8, g: u8, b: u8 };
+
+// \x1b[38;2;25;10;200mtext_go_here
+fn put_cell2(buf: []u8, i: usize, char: u8, rgb: RGB) void {
+    const offset: usize = i * cell_size;
+    buf[offset..][0..7].* = .{ 0x1b, '[', '3', '8', ';', '2', ';' };
+    buf[offset..][10..11].* = .{';'};
+    buf[offset..][14..15].* = .{';'};
+    buf[offset..][18..19].* = .{'m'};
+    buf[offset..][19..20].* = .{char};
+    _ = std.mem.print(buf[offset..][7..10], "{d:0>3}", .{rgb.r}) catch unreachable;
+    _ = std.mem.print(buf[offset..][11..14], "{d:0>3}", .{rgb.g}) catch unreachable;
+    _ = std.mem.print(buf[offset..][15..18], "{d:0>3}", .{rgb.b}) catch unreachable;
 }
 
 const expect = std.testing.expect;
@@ -512,7 +548,7 @@ test "dot_product_2" {
 
 // true color
 //
-// background = 19 bytes
+// background = 19 bytes + text bytes
 // \x1b[48;2;025;010;200mTRUECOLOR
 //
 // foreground
