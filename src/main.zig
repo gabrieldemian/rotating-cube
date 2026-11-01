@@ -321,8 +321,6 @@ fn rotate_y(v: Vec3, a: f32) Vec3 {
     return .{ v[0], v[1] * cos - v[2] * sin, v[2] };
 }
 
-var pair_to_lerp = [2]RGB{ GREEN, RED };
-
 /// Draw line calculating slope and diffs.
 fn draw_line(v0: Vec2, v1: Vec2, buf: []u8, rgb: RGB) void {
     // -1 or 1
@@ -354,16 +352,26 @@ fn draw_line3(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, rgb: RGB) void {
     draw_line(v2, v0, buf, rgb);
 }
 
-fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
+// top left convention to solve overdraw
+fn is_top_left(start: Vec2, end: Vec2) bool {
+    const e = end - start;
+    return e[1] > 0 or (e[1] == 0 and e[0] < 0);
+}
+
+/// Return a positive number if `p` is on the left side of `a` and `b`
+fn edge_cross(a: anytype, b: anytype, p: anytype) f32 {
     const ab = b - a;
     const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
 }
 
-// top left convention to solve overdraw
-fn is_top_left(start: Vec2, end: Vec2) bool {
-    const e = end - start;
-    return e[1] > 0 or (e[1] == 0 and e[0] < 0);
+/// Barycentric coordinates
+fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
+    const area: Vec3 = @splat(edge_cross(v0, v1, v2) / 1);
+    const alpha = (edge_cross(v1, v2, p) / 1);
+    const beta = (edge_cross(v2, v0, p) / 1);
+    const gamma = (edge_cross(v0, v1, p) / 1);
+    return Vec3{ alpha, beta, gamma } / area;
 }
 
 fn rasterize(
@@ -372,40 +380,59 @@ fn rasterize(
     v2: Vec2,
     buf: []u8,
 ) void {
+    const area = edge_cross(v0, v1, v2);
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
+    const d_w0_col = v1[1] - v2[1];
+    const d_w1_col = v2[1] - v0[1];
+    const d_w2_col = v0[1] - v1[1];
+    const d_w0_row = v2[0] - v1[0];
+    const d_w1_row = v0[0] - v2[0];
+    const d_w2_row = v1[0] - v0[0];
 
-    const tl0 = is_top_left(v1, v2);
-    const tl1 = is_top_left(v2, v0);
-    const tl2 = is_top_left(v0, v1);
+    const bias0: f32 = if (is_top_left(v1, v2)) 0 else -1;
+    const bias1: f32 = if (is_top_left(v2, v0)) 0 else -1;
+    const bias2: f32 = if (is_top_left(v0, v1)) 0 else -1;
+
+    const p0 = Vec2{ @floatFromInt(x_min), @floatFromInt(y_min) };
+    var w0_row = edge_cross(v1, v2, p0) + bias0;
+    var w1_row = edge_cross(v2, v0, p0) + bias1;
+    var w2_row = edge_cross(v0, v1, p0) + bias2;
 
     var y = y_min;
     while (y < y_max) : (y += 1) {
-        const yy = @as(f32, @floatFromInt(y)) + 0.5; // + 0.5 = pixel center
         const row: i32 = half_rows - y;
-
+        var w0 = w0_row + 0.5; // pixel center
+        var w1 = w1_row + 0.5;
+        var w2 = w2_row + 0.5;
         var x = x_min;
         while (x < x_max) : (x += 1) {
             if (half_cols + x < 0) continue;
             if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
-            const col: usize = @intCast(half_cols + x);
-            const xx = @as(f32, @floatFromInt(x)) + 0.5;
-            const i: usize = @as(usize, @intCast(row)) * cols + col;
-
-            const e0 = edge_cross(v1, v2, @as(Vec2, .{ xx, yy }));
-            const e1 = edge_cross(v2, v0, @as(Vec2, .{ xx, yy }));
-            const e2 = edge_cross(v0, v1, @as(Vec2, .{ xx, yy }));
-
-            const in0 = if (tl0) e0 >= 0 else e0 > 0;
-            const in1 = if (tl1) e1 >= 0 else e1 > 0;
-            const in2 = if (tl2) e2 >= 0 else e2 > 0;
-
-            if (in0 and in1 and in2) {
-                put_cell2(buf, i, line_char, RED);
+            if (w0 >= 0 and w1 >= 0 and w2 >= 0) {
+                const alpha: Vec3 = @splat(w0 / area);
+                const beta: Vec3 = @splat(w1 / area);
+                const gamma: Vec3 = @splat(w2 / area);
+                const color = @round(RED * alpha + GREEN * beta + BLUE * gamma);
+                const col: usize = @intCast(half_cols + x);
+                const i = @as(usize, @intCast(row)) * cols + col;
+                // cool pattern \/
+                // @round(
+                //     math.lerp(RED, GREEN, alpha) +
+                //     math.lerp(GREEN, BLUE, beta) +
+                //     math.lerp(BLUE, RED, gamma)
+                // );
+                put_cell2(buf, i, line_char, color);
             }
+            w0 += d_w0_col;
+            w1 += d_w1_col;
+            w2 += d_w2_col;
         }
+        w0_row += d_w0_row;
+        w1_row += d_w1_row;
+        w2_row += d_w2_row;
     }
 }
 
