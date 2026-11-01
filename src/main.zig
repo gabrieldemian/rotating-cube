@@ -19,6 +19,8 @@ const cell_size = 20;
 
 var cols: u16 = 50;
 var rows: u16 = 50;
+var half_cols: i32 = 0;
+var half_rows: i32 = 0;
 var should_quit = false;
 var bufe: [1024][2]f32 = undefined;
 var cleared_framebuf: [4096 * 50]u8 = undefined;
@@ -52,6 +54,8 @@ pub fn main(init: std.process.Init) !void {
     );
     cols = winsize.col;
     rows = winsize.row;
+    half_cols = cols / 2;
+    half_rows = rows / 2;
 
     // hide cursor
     try stdout.writeStreamingAll(init.io, "\x1b[?25l");
@@ -186,14 +190,19 @@ pub fn main(init: std.process.Init) !void {
             const t1 = out[t[1]];
             const t2 = out[t[2]];
             if (is_visible(t0, t1, t2)) {
-                _ = rasterize2(
+                _ = rasterize(
                     screen_space(project(t0, aspect) * terminal_scale),
                     screen_space(project(t1, aspect) * terminal_scale),
                     screen_space(project(t2, aspect) * terminal_scale),
                     buf,
                 );
-                // std.mem.swap(RGB, &pair_to_lerp[0], &pair_to_lerp[1]);
-                // pair_to_lerp = .{ BLUE, RED };
+                // draw_line3(
+                //     screen_space(project(t0, aspect) * terminal_scale),
+                //     screen_space(project(t1, aspect) * terminal_scale),
+                //     screen_space(project(t2, aspect) * terminal_scale),
+                //     buf,
+                //     GREEN,
+                // );
                 continue;
             }
         }
@@ -315,25 +324,15 @@ fn rotate_y(v: Vec3, a: f32) Vec3 {
 var pair_to_lerp = [2]RGB{ GREEN, RED };
 
 /// Draw line calculating slope and diffs.
-fn draw_line(
-    v0: Vec2,
-    v1: Vec2,
-    buf: []u8,
-    buf1: ?[][2]f32,
-    pair: [2]RGB,
-) usize {
+fn draw_line(v0: Vec2, v1: Vec2, buf: []u8, rgb: RGB) void {
     // -1 or 1
     const dx = v1[0] - v0[0];
     const dy = v1[1] - v0[1];
     const step: f32 = @max(@abs(dx), @abs(dy));
-    if (step == 0) return 0;
+    if (step == 0) return;
 
     const stepX = dx / step;
     const stepY = dy / step;
-
-    const half_cols: u16 = @divTrunc(cols, 2);
-    const half_rows: u16 = @divTrunc(rows, 2);
-    var count: usize = 0;
 
     for (0..(@as(usize, @round(step))) + 1) |i| {
         const ii = @as(f32, @floatFromInt(i));
@@ -344,25 +343,15 @@ fn draw_line(
             v0[0] + ii * stepX,
         ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            const iii: usize = @intCast(row * cols + col);
-            const lerped = @round(
-                math.lerp(
-                    pair[0],
-                    pair[1],
-                    @as(RGB, @splat(ii / (step + 1))),
-                ),
-            );
-
-            put_cell2(buf, iii, line_char, lerped);
-
-            if (buf1) |asd| {
-                asd[count] = .{ v0[0] + ii * stepX, v0[1] + ii * stepY };
-                count += 1;
-            }
+            put_cell2(buf, @intCast(row * cols + col), line_char, rgb);
         }
     }
+}
 
-    return count;
+fn draw_line3(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, rgb: RGB) void {
+    draw_line(v0, v1, buf, rgb);
+    draw_line(v1, v2, buf, rgb);
+    draw_line(v2, v0, buf, rgb);
 }
 
 fn edge_cross(
@@ -370,12 +359,12 @@ fn edge_cross(
     b: Vec2,
     p: Vec2,
 ) f32 {
-    const ab: Vec2 = .{ b[0] - a[0], b[1] - a[1] };
-    const ap: Vec2 = .{ p[0] - a[0], p[1] - a[1] };
+    const ab = b - a;
+    const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
 }
 
-fn rasterize2(
+fn rasterize(
     v0: Vec2,
     v1: Vec2,
     v2: Vec2,
@@ -386,18 +375,16 @@ fn rasterize2(
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
 
-    const half_cols: i32 = cols / 2;
-    const half_rows: i32 = rows / 2;
-
     var y = y_min;
     while (y < y_max) : (y += 1) {
         const yy: f32 = @floatFromInt(y);
         const row: i32 = half_rows - y;
+
         var x = x_min;
         while (x < x_max) : (x += 1) {
             if (half_cols + x < 0) continue;
+            if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
             const col: usize = @intCast(half_cols + x);
-            if (row < 0 or row >= rows or col >= cols) continue;
             const xx: f32 = @floatFromInt(x);
             const i: usize = @as(usize, @intCast(row)) * cols + col;
             if (edge_cross(v1, v2, @as(Vec2, .{ xx, yy })) >= 0 and
@@ -407,59 +394,6 @@ fn rasterize2(
                 put_cell2(buf, i, line_char, RED);
             }
         }
-    }
-}
-
-fn rasterize(
-    v0: Vec2,
-    v1: Vec2,
-    v2: Vec2,
-    buf: []u8,
-) void {
-    var len: usize = 0;
-    len += draw_line(v0, v1, buf, bufe[len..], pair_to_lerp);
-    len += draw_line(v1, v2, buf, bufe[len..], pair_to_lerp);
-    len += draw_line(v2, v0, buf, bufe[len..], pair_to_lerp);
-
-    const b = bufe[0..len];
-
-    std.mem.sortUnstable([2]f32, b, {}, struct {
-        fn lessThan(_: void, lhs: [2]f32, rhs: [2]f32) bool {
-            const l = @round(lhs[1]);
-            const r = @round(rhs[1]);
-            if (l != r) return l < r;
-            return lhs[0] < rhs[0];
-        }
-    }.lessThan);
-
-    // edges are sorted by Y like this
-    // (0,0) (1,0) (2,0) (3,1) (4,1) (7,1)
-    var first_i: usize = 0;
-    var i: f32 = 0;
-    var oldpair = pair_to_lerp;
-
-    while (first_i < b.len) {
-        const row_key = @round(b[first_i][1]);
-        var last_i: usize = first_i + 1;
-        // only draw first and last X of the same Y.
-        while (last_i < b.len and @round(b[last_i][1]) == row_key) {
-            last_i += 1;
-        }
-        const step: RGB = @splat(i / 31);
-        oldpair = .{
-            @round(math.lerp(pair_to_lerp[0], BLUE, step)),
-            @round(math.lerp(pair_to_lerp[1], BLUE, step)),
-        };
-        // print("{} old pair {any}\n", .{step, oldpair});
-        _ = draw_line(
-            @as(Vec2, b[first_i]),
-            @as(Vec2, b[last_i - 1]),
-            buf,
-            null,
-            oldpair,
-        );
-        first_i = last_i;
-        i += 1;
     }
 }
 
