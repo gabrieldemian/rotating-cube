@@ -354,14 +354,16 @@ fn draw_line3(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, rgb: RGB) void {
     draw_line(v2, v0, buf, rgb);
 }
 
-fn edge_cross(
-    a: Vec2,
-    b: Vec2,
-    p: Vec2,
-) f32 {
+fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
     const ab = b - a;
     const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
+}
+
+// top left convention to solve overdraw
+fn is_top_left(start: Vec2, end: Vec2) bool {
+    const e = end - start;
+    return e[1] > 0 or (e[1] == 0 and e[0] < 0);
 }
 
 fn rasterize(
@@ -375,9 +377,13 @@ fn rasterize(
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
 
+    const tl0 = is_top_left(v1, v2);
+    const tl1 = is_top_left(v2, v0);
+    const tl2 = is_top_left(v0, v1);
+
     var y = y_min;
     while (y < y_max) : (y += 1) {
-        const yy: f32 = @floatFromInt(y);
+        const yy = @as(f32, @floatFromInt(y)) + 0.5; // + 0.5 = pixel center
         const row: i32 = half_rows - y;
 
         var x = x_min;
@@ -385,12 +391,18 @@ fn rasterize(
             if (half_cols + x < 0) continue;
             if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
             const col: usize = @intCast(half_cols + x);
-            const xx: f32 = @floatFromInt(x);
+            const xx = @as(f32, @floatFromInt(x)) + 0.5;
             const i: usize = @as(usize, @intCast(row)) * cols + col;
-            if (edge_cross(v1, v2, @as(Vec2, .{ xx, yy })) >= 0 and
-                edge_cross(v2, v0, @as(Vec2, .{ xx, yy })) >= 0 and
-                edge_cross(v0, v1, @as(Vec2, .{ xx, yy })) >= 0)
-            {
+
+            const e0 = edge_cross(v1, v2, @as(Vec2, .{ xx, yy }));
+            const e1 = edge_cross(v2, v0, @as(Vec2, .{ xx, yy }));
+            const e2 = edge_cross(v0, v1, @as(Vec2, .{ xx, yy }));
+
+            const in0 = if (tl0) e0 >= 0 else e0 > 0;
+            const in1 = if (tl1) e1 >= 0 else e1 > 0;
+            const in2 = if (tl2) e2 >= 0 else e2 > 0;
+
+            if (in0 and in1 and in2) {
                 put_cell2(buf, i, line_char, RED);
             }
         }
