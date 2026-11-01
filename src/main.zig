@@ -146,10 +146,6 @@ pub fn main(init: std.process.Init) !void {
         last = now;
 
         @memcpy(buf, cleared);
-
-        put_cell2(buf, 0, 'F', .{ 165, 119, 202 });
-        put_cell2(buf, 1, 'P', .{ 165, 119, 202 });
-        put_cell2(buf, 2, 'S', .{ 165, 119, 202 });
         a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
@@ -209,6 +205,10 @@ pub fn main(init: std.process.Init) !void {
 
         frames += 1;
         fps_ns += @intCast(fr_until_now.toNanoseconds());
+
+        put_cell2(buf, 0, 'F', .{ 165, 119, 202 });
+        put_cell2(buf, 1, 'P', .{ 165, 119, 202 });
+        put_cell2(buf, 2, 'S', .{ 165, 119, 202 });
 
         // 500ms in ns
         if (fps_ns >= 500_000_000) {
@@ -359,7 +359,7 @@ fn is_top_left(start: Vec2, end: Vec2) bool {
 }
 
 /// Return a positive number if `p` is on the left side of `a` and `b`
-fn edge_cross(a: anytype, b: anytype, p: anytype) f32 {
+fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
     const ab = b - a;
     const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
@@ -385,39 +385,34 @@ fn rasterize(
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-    const d_w0_col = v1[1] - v2[1];
-    const d_w1_col = v2[1] - v0[1];
-    const d_w2_col = v0[1] - v1[1];
-    const d_w0_row = v2[0] - v1[0];
-    const d_w1_row = v0[0] - v2[0];
-    const d_w2_row = v1[0] - v0[0];
-
     const bias0: f32 = if (is_top_left(v1, v2)) 0 else -1;
     const bias1: f32 = if (is_top_left(v2, v0)) 0 else -1;
     const bias2: f32 = if (is_top_left(v0, v1)) 0 else -1;
 
-    const p0 = Vec2{ @floatFromInt(x_min), @floatFromInt(y_min) };
-    var w0_row = edge_cross(v1, v2, p0) + bias0;
-    var w1_row = edge_cross(v2, v0, p0) + bias1;
-    var w2_row = edge_cross(v0, v1, p0) + bias2;
-
     var y = y_min;
     while (y < y_max) : (y += 1) {
+        const yy = @as(f32, @floatFromInt(y)) + 0.5; // + 0.5 = pixel center
         const row: i32 = half_rows - y;
-        var w0 = w0_row + 0.5; // pixel center
-        var w1 = w1_row + 0.5;
-        var w2 = w2_row + 0.5;
+
         var x = x_min;
         while (x < x_max) : (x += 1) {
             if (half_cols + x < 0) continue;
             if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
+            const col: usize = @intCast(half_cols + x);
+            const xx = @as(f32, @floatFromInt(x)) + 0.5;
+            const i = @as(usize, @intCast(row)) * cols + col;
+            const pixel = @as(Vec2, .{ xx, yy });
+
+            // barycentric weights
+            const w0 = edge_cross(v1, v2, pixel) + bias0 + 0.5;
+            const w1 = edge_cross(v2, v0, pixel) + bias1 + 0.5;
+            const w2 = edge_cross(v0, v1, pixel) + bias2 + 0.5;
+
             if (w0 >= 0 and w1 >= 0 and w2 >= 0) {
                 const alpha: Vec3 = @splat(w0 / area);
                 const beta: Vec3 = @splat(w1 / area);
                 const gamma: Vec3 = @splat(w2 / area);
                 const color = @round(RED * alpha + GREEN * beta + BLUE * gamma);
-                const col: usize = @intCast(half_cols + x);
-                const i = @as(usize, @intCast(row)) * cols + col;
                 // cool pattern \/
                 // @round(
                 //     math.lerp(RED, GREEN, alpha) +
@@ -426,13 +421,7 @@ fn rasterize(
                 // );
                 put_cell2(buf, i, line_char, color);
             }
-            w0 += d_w0_col;
-            w1 += d_w1_col;
-            w2 += d_w2_col;
         }
-        w0_row += d_w0_row;
-        w1_row += d_w1_row;
-        w2_row += d_w2_row;
     }
 }
 
