@@ -6,6 +6,7 @@ const posix = std.posix;
 
 const Vec2 = @Vector(2, f32);
 const Vec3 = @Vector(3, f32);
+const RGB = Vec3;
 
 /// Units per second
 const move_per_key = 0.2;
@@ -135,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
 
     const cleared = cleared_framebuf[0..buf.len];
     for (0..@as(usize, winsize.row) * winsize.col) |i| {
-        put_cell2(cleared, i, ' ', .{ 0, 0, 0 });
+        put_clear_cell(cleared, i);
     }
 
     while (!should_quit) {
@@ -206,9 +207,9 @@ pub fn main(init: std.process.Init) !void {
         frames += 1;
         fps_ns += @intCast(fr_until_now.toNanoseconds());
 
-        put_cell2(buf, 0, 'F', .{ 165, 119, 202 });
-        put_cell2(buf, 1, 'P', .{ 165, 119, 202 });
-        put_cell2(buf, 2, 'S', .{ 165, 119, 202 });
+        put_cell_fg(buf, 0, .{ 165, 119, 202 }, 'F');
+        put_cell_fg(buf, 1, .{ 165, 119, 202 }, 'P');
+        put_cell_fg(buf, 2, .{ 165, 119, 202 }, 'S');
 
         // 500ms in ns
         if (fps_ns >= 500_000_000) {
@@ -220,7 +221,7 @@ pub fn main(init: std.process.Init) !void {
         const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
         for (num, 0..) |n, i| {
             // 4 = FPS len + 1 space
-            put_cell2(buf, 4 + i, n, .{ 210, 170, 85 });
+            put_cell_fg(buf, 4 + i, .{ 210, 170, 85 }, n);
         }
 
         writer.end = buf_.len;
@@ -341,7 +342,7 @@ fn draw_line(v0: Vec2, v1: Vec2, buf: []u8, rgb: RGB) void {
             v0[0] + ii * stepX,
         ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            put_cell2(buf, @intCast(row * cols + col), line_char, rgb);
+            put_cell_fg(buf, @intCast(row * cols + col), line_char, rgb);
         }
     }
 }
@@ -409,13 +410,13 @@ fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
                 const beta: Vec3 = @splat(w1 / area);
                 const gamma: Vec3 = @splat(w2 / area);
                 const color = @round(RED * alpha + GREEN * beta + BLUE * gamma);
+                put_cell_bg(buf, i, color);
                 // cool pattern \/
                 // @round(
                 //     math.lerp(RED, GREEN, alpha) +
                 //     math.lerp(GREEN, BLUE, beta) +
                 //     math.lerp(BLUE, RED, gamma)
                 // );
-                put_cell2(buf, i, line_char, color);
             }
         }
     }
@@ -445,24 +446,18 @@ fn norm(v: anytype) @TypeOf(v) {
     return v / @as(@TypeOf(v), @splat(magnitude(v)));
 }
 
-/// Put a logical cell `i` on the screen
-fn put_cell(buf: []u8, i: usize, char: u8) void {
-    if (cols == 0) return;
-    const offset: usize = i * cell_size;
-    if (offset > buf.len) return;
-    buf[offset..][0..cell_size].* = .{ 0x1b, '[', '3', '4', 'm', char };
-}
-
-const RGB = Vec3;
 const RED: RGB = .{ 255, 0, 0 };
 const GREEN: RGB = .{ 0, 255, 0 };
 const BLUE: RGB = .{ 0, 0, 255 };
 
+const ColorType = enum(u8) { fg = '3', bg = '4' };
+
 // \x1b[38;2;25;10;200mtext_go_here
-fn put_cell2(buf: []u8, i: usize, char: u8, rgb: RGB) void {
+fn put_cell(buf: []u8, i: usize, rgb: RGB, char: u8, code: ColorType) void {
+    // _ = code;
     const offset: usize = i * cell_size;
-    if (offset > buf.len) return;
-    buf[offset..][0..7].* = .{ 0x1b, '[', '3', '8', ';', '2', ';' };
+    if (offset + cell_size > buf.len) return;
+    buf[offset..][0..7].* = .{ 0x1b, '[', @backingInt(code), '8', ';', '2', ';' };
     buf[offset..][10..11].* = .{';'};
     buf[offset..][14..15].* = .{';'};
     buf[offset..][18..19].* = .{'m'};
@@ -470,6 +465,23 @@ fn put_cell2(buf: []u8, i: usize, char: u8, rgb: RGB) void {
     _ = std.mem.print(buf[offset..][7..10], "{d:0>3}", .{rgb[0]}) catch unreachable;
     _ = std.mem.print(buf[offset..][11..14], "{d:0>3}", .{rgb[1]}) catch unreachable;
     _ = std.mem.print(buf[offset..][15..18], "{d:0>3}", .{rgb[2]}) catch unreachable;
+}
+
+fn put_clear_cell(buf: []u8, i: usize) void {
+    const offset: usize = i * cell_size;
+    if (offset + cell_size > buf.len) return;
+    buf[offset..][0..20].* = .{
+        0x1b, '[', '0', '0', '0', '0', '0', '0', '0', '0',
+        ';',  '0', '0', '0', ';', '0', '0', '0', 'm', ' ',
+    };
+}
+
+fn put_cell_fg(buf: []u8, i: usize, rgb: RGB, char: u8) void {
+    put_cell(buf, i, rgb, char, .fg);
+}
+
+fn put_cell_bg(buf: []u8, i: usize, rgb: RGB) void {
+    put_cell(buf, i, rgb, ' ', .bg);
 }
 
 const expect = std.testing.expect;
