@@ -374,20 +374,16 @@ fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
     return Vec3{ alpha, beta, gamma } / area;
 }
 
-fn rasterize(
-    v0: Vec2,
-    v1: Vec2,
-    v2: Vec2,
-    buf: []u8,
-) void {
+fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
     const area = edge_cross(v0, v1, v2);
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-    const bias0: f32 = if (is_top_left(v1, v2)) 0 else -1;
-    const bias1: f32 = if (is_top_left(v2, v0)) 0 else -1;
-    const bias2: f32 = if (is_top_left(v0, v1)) 0 else -1;
+    // TODO: fixed point integers ftw
+    const bias0: f32 = if (is_top_left(v1, v2)) 0 else -0.0001;
+    const bias1: f32 = if (is_top_left(v2, v0)) 0 else -0.0001;
+    const bias2: f32 = if (is_top_left(v0, v1)) 0 else -0.0001;
 
     var y = y_min;
     while (y < y_max) : (y += 1) {
@@ -398,17 +394,17 @@ fn rasterize(
         while (x < x_max) : (x += 1) {
             if (half_cols + x < 0) continue;
             if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
-            const col: usize = @intCast(half_cols + x);
             const xx = @as(f32, @floatFromInt(x)) + 0.5;
-            const i = @as(usize, @intCast(row)) * cols + col;
             const pixel = @as(Vec2, .{ xx, yy });
 
             // barycentric weights
-            const w0 = edge_cross(v1, v2, pixel) + bias0 + 0.5;
-            const w1 = edge_cross(v2, v0, pixel) + bias1 + 0.5;
-            const w2 = edge_cross(v0, v1, pixel) + bias2 + 0.5;
+            const w0 = edge_cross(v1, v2, pixel) + bias0;
+            const w1 = edge_cross(v2, v0, pixel) + bias1;
+            const w2 = edge_cross(v0, v1, pixel) + bias2;
 
             if (w0 >= 0 and w1 >= 0 and w2 >= 0) {
+                const col: usize = @intCast(half_cols + x);
+                const i = @as(usize, @intCast(row)) * cols + col;
                 const alpha: Vec3 = @splat(w0 / area);
                 const beta: Vec3 = @splat(w1 / area);
                 const gamma: Vec3 = @splat(w2 / area);
