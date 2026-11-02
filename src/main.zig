@@ -1,4 +1,5 @@
 const std = @import("std");
+const fixed = @import("fixed");
 const Io = std.Io;
 const math = std.math;
 const print = std.debug.print;
@@ -364,49 +365,49 @@ fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
 }
 
 fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
-    const area = edge_cross(v0, v1, v2);
+    const area: Vec3 = @splat(edge_cross(v0, v1, v2));
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-    // TODO: fixed point integers ftw
-    const bias0: f32 = if (is_top_left(v1, v2)) 0 else -0.0001;
-    const bias1: f32 = if (is_top_left(v2, v0)) 0 else -0.0001;
-    const bias2: f32 = if (is_top_left(v0, v1)) 0 else -0.0001;
+    const bias: Vec3 = .{
+        if (is_top_left(v1, v2)) 0 else -0.0001,
+        if (is_top_left(v2, v0)) 0 else -0.0001,
+        if (is_top_left(v0, v1)) 0 else -0.0001,
+    };
+    // don't loop over pixels outside the screen
+    const x_start: i32 = @max(x_min, -half_cols);
+    const x_end: i32 = @min(x_max, cols - half_cols);
+    const y_start: i32 = @max(y_min, half_rows - (rows - 1));
+    const y_end: i32 = @min(y_max, half_rows + 1);
+    var topleft = Vec2{ @floatFromInt(x_start), @floatFromInt(y_start) };
+    topleft += @splat(0.5);
 
-    var y = y_min;
-    while (y < y_max) : (y += 1) {
-        const yy = @as(f32, @floatFromInt(y)) + 0.5; // + 0.5 = pixel center
-        const row: i32 = half_rows - y;
+    // barycentric weights (determinants)
+    var wleft = Vec3{
+        edge_cross(v1, v2, topleft),
+        edge_cross(v2, v0, topleft),
+        edge_cross(v0, v1, topleft),
+    } + bias;
 
-        var x = x_min;
-        while (x < x_max) : (x += 1) {
-            if (half_cols + x < 0) continue;
-            if (row < 0 or row >= rows or (half_cols + x) >= cols) continue;
-            const xx = @as(f32, @floatFromInt(x)) + 0.5;
-            const pixel = @as(Vec2, .{ xx, yy });
+    const dwdx: Vec3 = .{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
+    const dwdy: Vec3 = .{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
 
-            // barycentric weights
-            const w0 = edge_cross(v1, v2, pixel) + bias0;
-            const w1 = edge_cross(v2, v0, pixel) + bias1;
-            const w2 = edge_cross(v0, v1, pixel) + bias2;
-
-            if (w0 >= 0 and w1 >= 0 and w2 >= 0) {
+    var y = y_start;
+    while (y < y_end) : (y += 1) {
+        var w = wleft;
+        var x = x_start;
+        while (x < x_end) : (x += 1) {
+            if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                 const col: usize = @intCast(half_cols + x);
-                const i = @as(usize, @intCast(row)) * cols + col;
-                const alpha: Vec3 = @splat(w0 / area);
-                const beta: Vec3 = @splat(w1 / area);
-                const gamma: Vec3 = @splat(w2 / area);
-                const color = @round(RED * alpha + GREEN * beta + BLUE * gamma);
+                const i = @as(usize, @intCast(half_rows - y)) * cols + col;
+                const abg = w / area; // alpha beta gamma
+                const color = @round(RED * abg + GREEN * abg + BLUE * abg);
                 put_cell_bg(buf, i, color);
-                // cool pattern \/
-                // @round(
-                //     math.lerp(RED, GREEN, alpha) +
-                //     math.lerp(GREEN, BLUE, beta) +
-                //     math.lerp(BLUE, RED, gamma)
-                // );
             }
+            w += dwdx;
         }
+        wleft += dwdy;
     }
 }
 
@@ -576,3 +577,10 @@ test "dot_product_2" {
 // 4 = CMYK
 //
 // ";38" means
+//
+// cool pattern \/
+// @round(
+//     math.lerp(RED, GREEN, alpha) +
+//     math.lerp(GREEN, BLUE, beta) +
+//     math.lerp(BLUE, RED, gamma)
+// );
