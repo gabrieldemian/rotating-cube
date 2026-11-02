@@ -18,45 +18,81 @@ const camera = Vec3{ 0, 0, 0 };
 const fov: f32 = math.pi / 3.0;
 const cell_size = 20;
 
-var cols: u16 = 50;
-var rows: u16 = 50;
+var cols: u16 = 1;
+var rows: u16 = 1;
 var half_cols: i32 = 0;
 var half_rows: i32 = 0;
-var should_quit = false;
-var bufe: [1024][2]f32 = undefined;
-var cleared_framebuf: [4096 * 50]u8 = undefined;
+var should_quit = std.atomic.Value(bool).init(false);
+var should_resize = std.atomic.Value(bool).init(false);
+var framebuf: [300 * 150 * cell_size + 3]u8 = undefined;
+var cleared_framebuf: [300 * 150 * cell_size]u8 = undefined;
 var fpsbuf: [6]u8 = undefined;
 // terminal only sends 1 char at a time,
 // TODO: support kitty keyboard protocol
 var stdinbuf: [1]u8 = undefined;
+var winsize: posix.winsize = undefined;
 
-fn handleSigInt(_: std.posix.SIG) callconv(.c) void {
-    should_quit = true;
+// counter clockwise vertices.
+// right hand coordinates.
+const mesh = [_]Vec3{
+    // front
+    .{ 1, 1, 1 }, // top-right
+    .{ -1, 1, 1 }, //  top-left
+    .{ -1, -1, 1 }, //  bottom-left
+    .{ 1, -1, 1 }, //  bottom-right
+    // back
+    .{ -1, 1, -1 }, // top-right
+    .{ 1, 1, -1 }, // top-left
+    .{ 1, -1, -1 }, // bottom-left
+    .{ -1, -1, -1 }, // bottom-right
+};
+const tris = [_][3]u8{
+    .{ 0, 1, 2 }, .{ 0, 2, 3 },
+    .{ 4, 5, 6 }, .{ 4, 6, 7 },
+    .{ 0, 3, 6 }, .{ 0, 6, 5 },
+    .{ 1, 4, 7 }, .{ 1, 7, 2 },
+    .{ 1, 0, 5 }, .{ 1, 5, 4 },
+    .{ 2, 7, 6 }, .{ 2, 6, 3 },
+};
+
+fn handle_sigint(_: posix.SIG) callconv(.c) void {
+    should_quit.store(true, .release);
+}
+fn handle_sigwinch(_: posix.SIG) callconv(.c) void {
+    should_resize.store(true, .seq_cst);
+}
+
+fn resize(stdout: std.Io.File) void {
+    _ = posix.system.ioctl(
+        stdout.handle,
+        posix.T.IOCGWINSZ,
+        @intFromPtr(&winsize),
+    );
+    if (winsize.col != cols or winsize.row != rows) {
+        cols = winsize.col;
+        rows = winsize.row;
+        half_cols = cols / 2;
+        half_rows = rows / 2;
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
-    const mask: std.posix.sigset_t = std.mem.zeroes(std.posix.sigset_t);
-
-    const action = std.posix.Sigaction{
+    const action_sigint = posix.Sigaction{
         .flags = 0,
-        .mask = mask,
-        .handler = .{ .handler = handleSigInt },
+        .mask = posix.sigemptyset(),
+        .handler = .{ .handler = handle_sigint },
     };
-
-    std.posix.sigaction(std.posix.SIG.INT, &action, null);
+    posix.sigaction(posix.SIG.INT, &action_sigint, null);
+    const action_sigwinch = posix.Sigaction{
+        .flags = 0,
+        .mask = posix.sigemptyset(),
+        .handler = .{ .handler = handle_sigwinch },
+    };
+    posix.sigaction(posix.SIG.WINCH, &action_sigwinch, null);
 
     const stdout = Io.File.stdout();
     const stdin = Io.File.stdin();
-    var winsize: std.posix.winsize = undefined;
-    _ = std.posix.system.ioctl(
-        stdout.handle,
-        std.posix.T.IOCGWINSZ,
-        @intFromPtr(&winsize),
-    );
-    cols = winsize.col;
-    rows = winsize.row;
-    half_cols = cols / 2;
-    half_rows = rows / 2;
+    resize(stdout);
 
     // hide cursor
     try stdout.writeStreamingAll(init.io, "\x1b[?25l");
@@ -65,56 +101,18 @@ pub fn main(init: std.process.Init) !void {
     // remove kitty keyboard protocol flag
     defer stdout.writeStreamingAll(init.io, "\x1b[2J\x1b[H\x1b[?25h\x1b[<u") catch {};
 
-    const arena: std.mem.Allocator = init.arena.allocator();
-    // extra 3 for clear ANSI
-    // extra 6 for color codes
-    var buf_ = try arena.alloc(
-        u8,
-        (winsize.col * @as(usize, winsize.row) * cell_size) + 3,
-    );
-    buf_[0..3].* = [3]u8{ 0x1b, '[', 'H' };
-    const buf = buf_[3..];
-
-    var _writer: Io.File.Writer = .init(
-        stdout,
-        init.io,
-        buf_,
-    );
-    const writer = &_writer.interface;
-
-    // counter clockwise vertices.
-    // right hand coordinates.
-    const mesh = [_]Vec3{
-        // front
-        .{ 1, 1, 1 }, // top-right
-        .{ -1, 1, 1 }, //  top-left
-        .{ -1, -1, 1 }, //  bottom-left
-        .{ 1, -1, 1 }, //  bottom-right
-        // back
-        .{ -1, 1, -1 }, // top-right
-        .{ 1, 1, -1 }, // top-left
-        .{ 1, -1, -1 }, // bottom-left
-        .{ -1, -1, -1 }, // bottom-right
-    };
-    const tris = [_][3]u8{
-        .{ 0, 1, 2 }, .{ 0, 2, 3 },
-        .{ 4, 5, 6 }, .{ 4, 6, 7 },
-        .{ 0, 3, 6 }, .{ 0, 6, 5 },
-        .{ 1, 4, 7 }, .{ 1, 7, 2 },
-        .{ 1, 0, 5 }, .{ 1, 5, 4 },
-        .{ 2, 7, 6 }, .{ 2, 6, 3 },
-    };
+    framebuf[0..3].* = [3]u8{ 0x1b, '[', 'H' };
+    var buf = framebuf[3..(@as(usize, cols) * rows * cell_size + 3)];
 
     const terminal_scale = Vec2{ 1, 0.5 };
-    const aspect =
-        @as(f32, @floatFromInt(winsize.col)) /
-        @as(f32, @floatFromInt(winsize.row));
+    var aspect = @as(f32, @floatFromInt(cols)) / @as(f32, @floatFromInt(rows));
 
     const clock = std.Io.Clock.boot;
     var last = clock.now(init.io);
     var frames: u64 = 0;
     var fps_ns: u32 = 0;
 
+    // enter raw mode but still enable ctrl + C
     const orig = try posix.tcgetattr(posix.STDIN_FILENO);
     var raw = orig;
     raw.lflag.ICANON = false;
@@ -129,25 +127,29 @@ pub fn main(init: std.process.Init) !void {
     var translate: Vec3 = .{ 0, 0, -3.5 };
     var yaw_a: f32 = 0;
     var pitch_a: f32 = 0;
-
-    var out: [mesh.len]Vec3 = undefined;
     var last_fps: u64 = 0;
-    var a: f32 = 0;
+    var out: [mesh.len]Vec3 = undefined;
 
-    const cleared = cleared_framebuf[0..buf.len];
-    for (0..@as(usize, winsize.row) * winsize.col) |i| {
+    var cleared = cleared_framebuf[0..buf.len];
+    for (0..@as(usize, rows) * cols) |i| {
         put_clear_cell(cleared, i);
     }
 
-    while (!should_quit) {
+    while (!should_quit.load(.acquire)) {
+        if (should_resize.swap(false, .seq_cst)) {
+            resize(stdout);
+            buf = framebuf[3 .. (@as(usize, cols) * rows * cell_size) + 3];
+            cleared = cleared_framebuf[0..buf.len];
+            aspect = @as(f32, @floatFromInt(cols)) / @as(f32, @floatFromInt(rows));
+            for (0..@as(usize, rows) * cols) |i| {
+                put_clear_cell(cleared, i);
+            }
+        }
         const fr_until_now = last.untilNow(init.io, clock);
-        const dt = @as(f32, @floatFromInt(fr_until_now.toNanoseconds())) /
-            1_000_000_000;
         const now = clock.now(init.io);
         last = now;
 
         @memcpy(buf, cleared);
-        a += 1.0 * dt;
 
         inline for (mesh, 0..) |v, i| {
             out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
@@ -193,13 +195,6 @@ pub fn main(init: std.process.Init) !void {
                     screen_space(project(t2, aspect) * terminal_scale),
                     buf,
                 );
-                // draw_line3(
-                //     screen_space(project(t0, aspect) * terminal_scale),
-                //     screen_space(project(t1, aspect) * terminal_scale),
-                //     screen_space(project(t2, aspect) * terminal_scale),
-                //     buf,
-                //     GREEN,
-                // );
                 continue;
             }
         }
@@ -224,8 +219,7 @@ pub fn main(init: std.process.Init) !void {
             put_cell_fg(buf, 4 + i, .{ 210, 170, 85 }, n);
         }
 
-        writer.end = buf_.len;
-        try writer.flush();
+        try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + 3]);
         // try init.io.sleep(
         //     Io.Duration.fromMilliseconds(ms_to_sleep),
         //     Io.Clock.boot,
@@ -245,10 +239,7 @@ fn is_visible(v0: Vec3, v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
 fn screen_space(ndc: Vec2) @Vector(2, f32) {
     const w: f32 = @floatFromInt(cols);
     const h: f32 = @floatFromInt(rows);
-    return .{
-        ndc[0] * w,
-        ndc[1] * h,
-    };
+    return .{ ndc[0] * w, ndc[1] * h };
 }
 
 // equivalent to  fov = 90° and aspect = 1
@@ -279,10 +270,7 @@ fn project(v: Vec3, a: f32) Vec2 {
 
     // clip space before the divide by w
 
-    return .{
-        x1 / w,
-        y1 / w,
-    };
+    return .{ x1 / w, y1 / w };
 }
 
 fn move_z(v: Vec3, d: f32) Vec3 {
