@@ -27,7 +27,6 @@ var should_quit = std.atomic.Value(bool).init(false);
 var should_resize = std.atomic.Value(bool).init(false);
 var framebuf: [300 * 150 * cell_size + 3]u8 = undefined;
 var cleared_framebuf: [300 * 150 * cell_size]u8 = undefined;
-var fpsbuf: [6]u8 = undefined;
 // terminal only sends 1 char at a time,
 // TODO: support kitty keyboard protocol
 var stdinbuf: [1]u8 = undefined;
@@ -213,8 +212,7 @@ pub fn main(init: std.process.Init) !void {
             frames = 0;
             fps_ns = 0;
         }
-
-        const num = try std.mem.print(&fpsbuf, "{d:0>6}", .{last_fps % 1000000});
+        const num = try std.mem.print(buf[4..], "{d:0>6}", .{last_fps % 1000000});
         for (num, 0..) |n, i| {
             // 4 = FPS len + 1 space
             put_cell_fg(buf, 4 + i, .{ 210, 170, 85 }, n);
@@ -358,14 +356,17 @@ fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
 /// Barycentric coordinates
 fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
     const area: Vec3 = @splat(edge_cross(v0, v1, v2) / 1);
-    const alpha = (edge_cross(v1, v2, p) / 1);
-    const beta = (edge_cross(v2, v0, p) / 1);
-    const gamma = (edge_cross(v0, v1, p) / 1);
+    const alpha = edge_cross(v1, v2, p) / 1;
+    const beta = edge_cross(v2, v0, p) / 1;
+    const gamma = edge_cross(v0, v1, p) / 1;
     return Vec3{ alpha, beta, gamma } / area;
 }
 
 fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
-    const area: Vec3 = @splat(edge_cross(v0, v1, v2));
+    const area = edge_cross(v0, v1, v2);
+    // trick to divide once per triangle instead of per pixel
+    // remove this if color interpolation is no longer used
+    const inv_area: Vec3 = @splat(1.0 / area);
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
@@ -384,30 +385,37 @@ fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
     topleft += @splat(0.5);
 
     // barycentric weights (determinants)
-    var wleft = Vec3{
+    var wleft = (Vec3{
         edge_cross(v1, v2, topleft),
         edge_cross(v2, v0, topleft),
         edge_cross(v0, v1, topleft),
-    } + bias;
+    } + bias) * inv_area;
 
-    const dwdx: Vec3 = .{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
-    const dwdy: Vec3 = .{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
+    const dw_dx = Vec3{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] } * inv_area;
+    const dw_dy = Vec3{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] } * inv_area;
+    // calculate difference in color change for x and y
+    const dc_dx = Vec3{ RED[0] * dw_dx[0], GREEN[1] * dw_dx[1], BLUE[2] * dw_dx[2] };
+    const dc_dy = Vec3{ RED[0] * dw_dy[0], GREEN[1] * dw_dy[1], BLUE[2] * dw_dy[2] };
 
+    // incremental calculation of color and w
+    var color_left = RED * wleft + GREEN * wleft + BLUE * wleft;
     var y = y_start;
     while (y < y_end) : (y += 1) {
+        const row_start = @as(usize, @intCast(half_rows - y)) * cols;
         var w = wleft;
         var x = x_start;
+        var color = color_left;
+
         while (x < x_end) : (x += 1) {
             if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                 const col: usize = @intCast(half_cols + x);
-                const i = @as(usize, @intCast(half_rows - y)) * cols + col;
-                const abg = w / area; // alpha beta gamma
-                const color = @round(RED * abg + GREEN * abg + BLUE * abg);
-                put_cell_bg(buf, i, color);
+                put_cell_bg(buf, row_start + col, @round(color));
             }
-            w += dwdx;
+            w += dw_dx;
+            color += dc_dx;
         }
-        wleft += dwdy;
+        wleft += dw_dy;
+        color_left += dc_dy;
     }
 }
 
@@ -443,7 +451,6 @@ const ColorType = enum(u8) { fg = '3', bg = '4' };
 
 // \x1b[38;2;25;10;200mtext_go_here
 fn put_cell(buf: []u8, i: usize, rgb: RGB, char: u8, code: ColorType) void {
-    // _ = code;
     const offset: usize = i * cell_size;
     if (offset + cell_size > buf.len) return;
     buf[offset..][0..7].* = .{ 0x1b, '[', @backingInt(code), '8', ';', '2', ';' };
@@ -458,7 +465,6 @@ fn put_cell(buf: []u8, i: usize, rgb: RGB, char: u8, code: ColorType) void {
 
 fn put_clear_cell(buf: []u8, i: usize) void {
     const offset: usize = i * cell_size;
-    if (offset + cell_size > buf.len) return;
     buf[offset..][0..20].* = .{
         0x1b, '[', '0', '0', '0', '0', '0', '0', '0', '0',
         ';',  '0', '0', '0', ';', '0', '0', '0', 'm', ' ',
