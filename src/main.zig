@@ -1,5 +1,5 @@
 const std = @import("std");
-const fixed = @import("fixed");
+const key = @import("key.zig");
 const Io = std.Io;
 const math = std.math;
 const print = std.debug.print;
@@ -10,8 +10,8 @@ const Vec3 = @Vector(3, f32);
 const RGB = Vec3;
 
 /// Units per second
-const move_per_key = 0.2;
-const angle_per_key = 0.1;
+const move_per_key = 5.0;
+const angle_per_key = 2.0;
 const line_char: u8 = '#';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
@@ -25,11 +25,11 @@ var half_cols: i32 = 0;
 var half_rows: i32 = 0;
 var should_quit = std.atomic.Value(bool).init(false);
 var should_resize = std.atomic.Value(bool).init(false);
-var framebuf: [300 * 150 * cell_size + 3]u8 = undefined;
-var cleared_framebuf: [300 * 150 * cell_size]u8 = undefined;
-// terminal only sends 1 char at a time,
-// TODO: support kitty keyboard protocol
-var stdinbuf: [1]u8 = undefined;
+const buf_extra = 3;
+var framebuf: [300 * 150 * cell_size + buf_extra]u8 = undefined;
+var cleared_framebuf: [framebuf.len]u8 = undefined;
+var stdinbuf: [100]u8 = undefined;
+var stdin_writer = Io.Writer.fixed(&stdinbuf);
 var winsize: posix.winsize = undefined;
 
 // counter clockwise vertices.
@@ -94,15 +94,18 @@ pub fn main(init: std.process.Init) !void {
     const stdin = Io.File.stdin();
     resize(stdout);
 
-    // hide cursor
-    try stdout.writeStreamingAll(init.io, "\x1b[?25l");
+    const toflush = [_]u8{
+        0x1b, '[', '?', '2', '5', 'l', // hide cursor
+        0x1b, '[', '>', '1', '0', 'u', // kitty keyboard protocol
+    };
+    try stdout.writeStreamingAll(init.io, &toflush);
 
     // show cursor, clear screen, place cursor at the top,
     // remove kitty keyboard protocol flag
     defer stdout.writeStreamingAll(init.io, "\x1b[2J\x1b[H\x1b[?25h\x1b[<u") catch {};
 
     framebuf[0..3].* = [3]u8{ 0x1b, '[', 'H' };
-    var buf = framebuf[3..(@as(usize, cols) * rows * cell_size + 3)];
+    var buf = framebuf[buf_extra..(@as(usize, cols) * rows * cell_size + buf_extra)];
 
     const terminal_scale = Vec2{ 1, 0.5 };
     var aspect = @as(f32, @floatFromInt(cols)) / @as(f32, @floatFromInt(rows));
@@ -129,6 +132,9 @@ pub fn main(init: std.process.Init) !void {
     var pitch_a: f32 = 0;
     var last_fps: u64 = 0;
     var out: [mesh.len]Vec3 = undefined;
+    var curr_move_key: ?u8 = null;
+    var curr_camera_key: ?u8 = null;
+    var curr_flying_key: ?u8 = null;
 
     var cleared = cleared_framebuf[0..buf.len];
     for (0..@as(usize, rows) * cols) |i| {
@@ -138,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
     while (!should_quit.load(.acquire)) {
         if (should_resize.swap(false, .seq_cst)) {
             resize(stdout);
-            buf = framebuf[3 .. (@as(usize, cols) * rows * cell_size) + 3];
+            buf = framebuf[buf_extra .. (@as(usize, cols) * rows * cell_size) + buf_extra];
             cleared = cleared_framebuf[0..buf.len];
             aspect = @as(f32, @floatFromInt(cols)) / @as(f32, @floatFromInt(rows));
             for (0..@as(usize, rows) * cols) |i| {
@@ -146,6 +152,10 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         const fr_until_now = last.untilNow(init.io, clock);
+        const dt = @as(
+            f32,
+            @floatFromInt(last.untilNow(init.io, clock).toMilliseconds()),
+        ) / 1000;
         const now = clock.now(init.io);
         last = now;
 
@@ -164,23 +174,67 @@ pub fn main(init: std.process.Init) !void {
             else => 0, // TODO: handle errors?
         };
         if (inread > 0) {
-            const keys = stdinbuf[0..inread];
-            const d = move_per_key;
-            for (keys) |key| {
-                switch (key) {
-                    // move
-                    'w' => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
-                    'a' => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
-                    's' => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
-                    'd' => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
-                    'q' => translate += Vec3{ 0, d, 0 },
-                    ' ' => translate += Vec3{ 0, -d, 0 },
-                    'h' => yaw_a += angle_per_key,
-                    'l' => yaw_a -= angle_per_key,
-                    'j' => pitch_a -= angle_per_key,
-                    'k' => pitch_a += angle_per_key,
+            if (key.parse(stdinbuf[0..inread])) |k| {
+                switch (k.key) {
+                    'w', 'a', 's', 'd' => {
+                        if (k.event == .release) {
+                            curr_move_key = null;
+                        } else {
+                            curr_move_key = k.key;
+                        }
+                    },
+                    'h', 'j', 'k', 'l' => {
+                        if (k.event == .release) {
+                            curr_camera_key = null;
+                        } else {
+                            curr_camera_key = k.key;
+                        }
+                    },
+                    'q', ' ' => {
+                        if (k.event == .release) {
+                            curr_flying_key = null;
+                        } else {
+                            curr_flying_key = k.key;
+                        }
+                    },
+                    'c' => {
+                        if (k.mod.ctrl) {
+                            should_quit.store(true, .release);
+                        }
+                    },
                     else => {},
                 }
+            }
+        }
+
+        if (curr_camera_key) |k| {
+            const d = angle_per_key * dt;
+            switch (k) {
+                'h' => yaw_a += d,
+                'l' => yaw_a -= d,
+                'j' => pitch_a -= d,
+                'k' => pitch_a += d,
+                else => {},
+            }
+        }
+
+        if (curr_move_key) |k| {
+            const d = move_per_key * dt;
+            switch (k) {
+                'w' => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
+                'a' => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
+                's' => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
+                'd' => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
+                else => {},
+            }
+        }
+
+        if (curr_flying_key) |k| {
+            const d = move_per_key * dt;
+            switch (k) {
+                'q' => translate += Vec3{ 0, d, 0 },
+                ' ' => translate += Vec3{ 0, -d, 0 },
+                else => {},
             }
         }
 
@@ -218,11 +272,11 @@ pub fn main(init: std.process.Init) !void {
             put_cell_fg(buf, 4 + i, .{ 210, 170, 85 }, n);
         }
 
-        try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + 3]);
-        // try init.io.sleep(
-        //     Io.Duration.fromMilliseconds(ms_to_sleep),
-        //     Io.Clock.boot,
-        // );
+        try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + buf_extra]);
+        try init.io.sleep(
+            Io.Duration.fromMilliseconds(ms_to_sleep),
+            Io.Clock.boot,
+        );
     }
 }
 
