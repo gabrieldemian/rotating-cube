@@ -2,6 +2,7 @@
 // https://sw.kovidgoyal.net/kitty/keyboard-protocol
 
 const std = @import("std");
+const Reader = std.Io.Reader;
 
 pub const Event = enum(u8) { press = '1', repeat = '2', release = '3' };
 pub const Key = struct {
@@ -20,8 +21,8 @@ pub const Modifier = packed struct(u8) {
     num_lock: bool,
 };
 
-pub fn parse(buf: []const u8) ?Key {
-    if (buf.len < 4) return null;
+pub fn parse(r: *Reader) ?Key {
+    if (r.buffered().len < 4) return null;
     // 0 init
     // 1 past x1b
     // 2 past x5b
@@ -33,8 +34,10 @@ pub fn parse(buf: []const u8) ?Key {
     var modifier: Modifier = @fromBackingInt(0);
     var event: ?Event = null;
     var value: u32 = 0;
+    const buf = r.buffered();
     // std.debug.print("s: {s} \n", .{buf});
     for (buf) |byte| {
+        r.seek += 1;
         switch (byte) {
             0x1b => if (state > 0) return null else {
                 state = 1;
@@ -53,16 +56,13 @@ pub fn parse(buf: []const u8) ?Key {
                     value *= 10;
                     value += byte - '0';
                     state = 3;
-                    continue;
+                }
+                if (state == 5) {
+                    event = @fromBackingInt(@intCast(byte));
                 }
                 if (state == 4) {
                     modifier = @fromBackingInt(byte - '0');
                     state = 5;
-                    continue;
-                }
-                if (state == 5) {
-                    event = @fromBackingInt(@intCast(byte));
-                    continue;
                 }
             },
             ';' => {
@@ -96,41 +96,84 @@ const expect = std.testing.expect;
 
 test "parse_w" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.event == .press);
-    try expect(r.key == 'w');
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.event == .press);
+    try expect(res.key == 'w');
+    try expect(r.seek == buf.len);
+}
+
+test "parse_w_2" {
+    const buf = [_]u8{
+        0x1b, '[', '1', '1', '9', 'u',
+        0x1b, '[', '1', '1', '9', 'u',
+    };
+    var r = Reader.fixed(&buf);
+    for (1..4) |i| {
+        const res = parse(&r).?;
+        try expect(res.event == .press);
+        try expect(res.key == 'w');
+        try expect(r.seek == i * 6);
+    }
+}
+
+test "parse_w_3" {
+    const buf = [_]u8{
+        0x1b, '[', '1', '1', '9', 'u',
+        0x1b, '[', '1', '1', '9', ';',
+        '1',  ':', '3', 'u',
+    };
+    var r = Reader.fixed(&buf);
+    for (0..2) |i| {
+        const res = parse(&r).?;
+        try expect(res.key == 'w');
+        if (i == 0) {
+            try expect(res.event == .press);
+            try expect(r.seek == 6);
+        } else {
+            try expect(res.event == .release);
+            try expect(r.seek == 16);
+        }
+    }
 }
 
 test "parse_w_mod" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', ';', '1', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.event == .press);
-    try expect(r.key == 'w');
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.event == .press);
+    try expect(res.key == 'w');
+    try expect(r.end == buf.len);
 }
 
 test "parse_w_mod_event" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', ';', '1', ':', '1', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.event == .press);
-    try expect(r.key == 'w');
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.event == .press);
+    try expect(res.key == 'w');
+    try expect(r.end == buf.len);
 }
 
 test "parse_w_mod_event_repeat" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', ';', '1', ':', '2', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.event == .repeat);
-    try expect(r.key == 'w');
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.event == .repeat);
+    try expect(res.key == 'w');
+    try expect(r.end == buf.len);
 }
 
 test "parse_w_mod_event_release" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', ';', '1', ':', '3', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.event == .release);
-    try expect(r.key == 'w');
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.event == .release);
+    try expect(res.key == 'w');
+    try expect(r.end == buf.len);
 }
 
 // test "parse_mods" {
-//     // 57442;1:3u
 //     const buf = [_]u8{ 0x1b, '[', '5', '7', '4', '4', '2', ';', '1', ':', '3', 'u' };
 //     const r = parse(&buf).?;
 //     try expect(r.key == 57442);
@@ -139,21 +182,23 @@ test "parse_w_mod_event_release" {
 // }
 
 test "parse_ctrl_c_press" {
-    // 57442;1:3u
     const buf = [_]u8{ 0x1b, '[', '9', '9', ';', '5', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.key == 'c');
-    try expect(r.event == .press);
-    try expect(r.mod.ctrl);
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.key == 'c');
+    try expect(res.event == .press);
+    try expect(res.mod.ctrl);
+    try expect(r.end == buf.len);
 }
 
 test "parse_ctrl_c_release" {
-    // 57442;1:3u
     const buf = [_]u8{ 0x1b, '[', '9', '9', ';', '5', ':', '3', 'u' };
-    const r = parse(&buf).?;
-    try expect(r.key == 'c');
-    try expect(r.event == .release);
-    try expect(r.mod.ctrl);
+    var r = Reader.fixed(&buf);
+    const res = parse(&r).?;
+    try expect(res.key == 'c');
+    try expect(res.event == .release);
+    try expect(res.mod.ctrl);
+    try expect(r.end == buf.len);
 }
 
 // [119u[119;1:3u

@@ -9,9 +9,7 @@ const Vec2 = @Vector(2, f32);
 const Vec3 = @Vector(3, f32);
 const RGB = Vec3;
 
-/// Units per second
-const move_per_key = 5.0;
-const angle_per_key = 2.0;
+const move_per_sec = 5.0;
 const line_char: u8 = '#';
 const fps: u32 = 60;
 const ms_to_sleep: i64 = @trunc((1000 / @as(f32, fps)));
@@ -29,7 +27,6 @@ const buf_extra = 3;
 var framebuf: [300 * 150 * cell_size + buf_extra]u8 = undefined;
 var cleared_framebuf: [framebuf.len]u8 = undefined;
 var stdinbuf: [100]u8 = undefined;
-var stdin_writer = Io.Writer.fixed(&stdinbuf);
 var winsize: posix.winsize = undefined;
 
 // counter clockwise vertices.
@@ -115,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
     var frames: u64 = 0;
     var fps_ns: u32 = 0;
 
-    // enter raw mode but still enable ctrl + C
+    // enter raw mode
     const orig = try posix.tcgetattr(posix.STDIN_FILENO);
     var raw = orig;
     raw.lflag.ICANON = false;
@@ -132,9 +129,18 @@ pub fn main(init: std.process.Init) !void {
     var pitch_a: f32 = 0;
     var last_fps: u64 = 0;
     var out: [mesh.len]Vec3 = undefined;
-    var curr_move_key: ?u8 = null;
-    var curr_camera_key: ?u8 = null;
-    var curr_flying_key: ?u8 = null;
+    var curr_keys_down: packed struct(u10) {
+        w: bool,
+        a: bool,
+        s: bool,
+        d: bool,
+        h: bool,
+        j: bool,
+        k: bool,
+        l: bool,
+        @" ": bool,
+        q: bool,
+    } = @fromBackingInt(0);
 
     var cleared = cleared_framebuf[0..buf.len];
     for (0..@as(usize, rows) * cols) |i| {
@@ -152,10 +158,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         const fr_until_now = last.untilNow(init.io, clock);
-        const dt = @as(
-            f32,
-            @floatFromInt(last.untilNow(init.io, clock).toMilliseconds()),
-        ) / 1000;
+        const dt_ms = last.untilNow(init.io, clock).toMilliseconds();
+        const dt = @as(f32, @floatFromInt(dt_ms)) / 1000;
         const now = clock.now(init.io);
         last = now;
 
@@ -165,7 +169,7 @@ pub fn main(init: std.process.Init) !void {
             out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
         }
 
-        const inread = stdin.readStreaming(
+        const stdin_len = stdin.readStreaming(
             init.io,
             &[_][]u8{&stdinbuf},
         ) catch |e| switch (e) {
@@ -173,68 +177,37 @@ pub fn main(init: std.process.Init) !void {
             error.EndOfStream => 0,
             else => 0, // TODO: handle errors?
         };
-        if (inread > 0) {
-            if (key.parse(stdinbuf[0..inread])) |k| {
-                switch (k.key) {
-                    'w', 'a', 's', 'd' => {
-                        if (k.event == .release) {
-                            curr_move_key = null;
-                        } else {
-                            curr_move_key = k.key;
-                        }
-                    },
-                    'h', 'j', 'k', 'l' => {
-                        if (k.event == .release) {
-                            curr_camera_key = null;
-                        } else {
-                            curr_camera_key = k.key;
-                        }
-                    },
-                    'q', ' ' => {
-                        if (k.event == .release) {
-                            curr_flying_key = null;
-                        } else {
-                            curr_flying_key = k.key;
-                        }
-                    },
-                    'c' => {
-                        if (k.mod.ctrl) {
-                            should_quit.store(true, .release);
-                        }
-                    },
-                    else => {},
+        if (stdin_len > 0) {
+            var r = Io.Reader.fixed(stdinbuf[0..stdin_len]);
+            // parse all key codes in stdin to see which keys are
+            // pressed down and translate/transform all at once
+            while (r.seek < r.end) {
+                if (key.parse(&r)) |k| {
+                    const key_is_down = k.event != .release;
+                    inline for (@typeInfo(@TypeOf(curr_keys_down)).@"struct".field_names) |n| {
+                        if (k.key == n[0]) @field(curr_keys_down, n) = key_is_down;
+                        if (k.key == 'c' and k.mod.ctrl) should_quit.store(true, .release);
+                    }
                 }
             }
         }
 
-        if (curr_camera_key) |k| {
-            const d = angle_per_key * dt;
-            switch (k) {
-                'h' => yaw_a += d,
-                'l' => yaw_a -= d,
-                'j' => pitch_a -= d,
-                'k' => pitch_a += d,
-                else => {},
-            }
-        }
-
-        if (curr_move_key) |k| {
-            const d = move_per_key * dt;
-            switch (k) {
-                'w' => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
-                'a' => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
-                's' => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
-                'd' => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
-                else => {},
-            }
-        }
-
-        if (curr_flying_key) |k| {
-            const d = move_per_key * dt;
-            switch (k) {
-                'q' => translate += Vec3{ 0, d, 0 },
-                ' ' => translate += Vec3{ 0, -d, 0 },
-                else => {},
+        const d = move_per_sec * dt;
+        inline for (0.., @typeInfo(@TypeOf(curr_keys_down)).@"struct".field_names) |i, n| {
+            if (@field(curr_keys_down, n)) {
+                switch (i) {
+                    0 => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
+                    1 => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
+                    2 => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
+                    3 => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
+                    4 => yaw_a += d * 0.3,
+                    5 => pitch_a -= d * 0.3,
+                    6 => pitch_a += d * 0.3,
+                    7 => yaw_a -= d * 0.3,
+                    8 => translate += Vec3{ 0, -d, 0 },
+                    9 => translate += Vec3{ 0, d, 0 },
+                    else => unreachable,
+                }
             }
         }
 
@@ -274,7 +247,7 @@ pub fn main(init: std.process.Init) !void {
 
         try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + buf_extra]);
         try init.io.sleep(
-            Io.Duration.fromMilliseconds(ms_to_sleep),
+            Io.Duration.fromMilliseconds(ms_to_sleep / 2),
             Io.Clock.boot,
         );
     }
