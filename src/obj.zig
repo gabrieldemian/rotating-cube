@@ -1,3 +1,4 @@
+const Vec3 = @Vector(3, f32);
 const std = @import("std");
 const Io = std.Io;
 const mem = std.mem;
@@ -5,17 +6,31 @@ const print = std.debug.print;
 
 pub const Mesh = struct {
     // vertices
-    verts: []usize,
+    mesh: []Vec3,
     // faces (triangles)
-    tris: []f32,
+    tris: []usize,
 };
 
-pub fn parse(r: *Io.Reader, verts: []usize, tris: []f32) !Mesh {
-    var it = mem.splitScalar(u8, r.buffered(), '\n');
+pub fn open(name: []const u8, arena: *std.heap.ArenaAllocator, io: Io) !Mesh {
+    const gpa = arena.allocator();
+    const file = try Io.Dir.cwd().openFile(io, name, .{});
+
+    var buf = try gpa.alloc(u8, try file.length(io));
+    const read = try file.readPositionalAll(io, buf, 0);
+    const filebuf = buf[0..read];
+
+    const verts: []usize = try gpa.alloc(usize, buf.len);
+    const tris: []Vec3 = try gpa.alloc(Vec3, buf.len);
+
+    return try parse(filebuf, verts, tris);
+}
+
+fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
+    var it_lines = mem.splitScalar(u8, buf, '\n');
     var i_tris: usize = 0;
     var i_verts: usize = 0;
 
-    while (it.next()) |line| {
+    while (it_lines.next()) |line| {
         if (line.len < 1) continue;
         switch (line[0]) {
             'v' => {
@@ -31,16 +46,16 @@ pub fn parse(r: *Io.Reader, verts: []usize, tris: []f32) !Mesh {
                     ' ' => {},
                     else => continue,
                 }
-                var it2 = mem.tokenizeScalar(u8, line[1..], ' ');
-                while (it2.next()) |digit| {
-                    tris[i_tris] = try std.fmt.parseFloat(f32, digit);
-                    i_tris += 1;
-                }
+                var it = mem.tokenizeScalar(u8, line[2..], ' ');
+                tris[i_tris][0] = try std.fmt.parseFloat(f32, it.next().?);
+                tris[i_tris][1] = try std.fmt.parseFloat(f32, it.next().?);
+                tris[i_tris][2] = try std.fmt.parseFloat(f32, it.next().?);
+                i_tris += 1;
             },
 
             'f' => {
-                var it2 = mem.tokenizeScalar(u8, line[1..], ' ');
-                outer: while (it2.next()) |idx| : (i_verts += 1) {
+                var it = mem.tokenizeScalar(u8, line[2..], ' ');
+                outer: while (it.next()) |idx| : (i_verts += 1) {
                     var it_vn = mem.tokenizeAny(u8, idx, "//");
 
                     // f v1//vn1 v2//vn2 v3//vn3 => vertex and normals but no texture
@@ -72,36 +87,45 @@ pub fn parse(r: *Io.Reader, verts: []usize, tris: []f32) !Mesh {
         }
     }
 
-    return .{ .tris = tris[0..i_tris], .verts = verts[0..i_verts] };
+    return .{ .mesh = tris[0..i_tris], .tris = verts[0..i_verts] };
 }
 
 const expect = std.testing.expect;
 
 test "parse" {
-    const gpa = std.testing.allocator;
-    const io = @constCast(&Io.Threaded.init(gpa, .{})).io();
+    const arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = @constCast(&Io.Threaded.init(std.testing.allocator, .{})).io();
     const file = try Io.Dir.cwd().openFile(io, "cube.obj", .{});
 
-    var buf: [500]u8 = undefined;
+    var buf: [10 * 20]u8 = undefined;
     const read = try file.readPositionalAll(io, &buf, 0);
     const slice = buf[0..read];
 
-    var r = Io.Reader.fixed(slice);
-    var verts: [100]usize = undefined;
-    var tris: [100]f32 = undefined;
-    const res = try parse(&r, &verts, &tris);
+    var tris: [8 * 3]Vec3 = undefined;
+    var verts: [12 * 3]usize = undefined;
+    const res = try parse(slice, &verts, &tris);
 
-    try expect(std.mem.eql(f32, res.tris, &[_]f32{
-        1,  1,  1,
-        -1, 1,  1,
-        -1, -1, 1,
-        1,  -1, 1,
-        -1, 1,  -1,
-        1,  1,  -1,
-        1,  -1, -1,
-        -1, -1, -1,
-    }));
-    try expect(std.mem.eql(usize, res.verts, &[_]usize{
+    const expected = [_]Vec3{
+        // zig fmt: off
+        .{  1,  1,  1 },
+        .{ -1,  1,  1 },
+        .{ -1, -1,  1 },
+        .{  1, -1,  1 },
+        .{ -1,  1, -1 },
+        .{  1,  1, -1 },
+        .{  1, -1, -1 },
+        .{ -1, -1, -1 },
+        // zig fmt: on
+    };
+
+    for (res.mesh, expected) |v, e| {
+        try expect(v[0] == e[0]);
+        try expect(v[1] == e[1]);
+        try expect(v[2] == e[2]);
+    }
+
+    try expect(std.mem.eql(usize, res.tris, &[_]usize{
         0, 1, 2,
         0, 2, 3,
         4, 5, 6,

@@ -1,12 +1,13 @@
 const std = @import("std");
 const key = @import("key.zig");
+const obj = @import("obj.zig");
 const Io = std.Io;
 const math = std.math;
 const print = std.debug.print;
 const posix = std.posix;
 
 const Vec2 = @Vector(2, f32);
-const Vec3 = @Vector(3, f32);
+pub const Vec3 = @Vector(3, f32);
 const RGB = Vec3;
 
 const move_per_sec = 5.0;
@@ -28,29 +29,6 @@ pub var framebuf: [300 * 150 * cell_size + buf_extra]u8 = undefined;
 var cleared_framebuf: [framebuf.len]u8 = undefined;
 var stdinbuf: [100]u8 = undefined;
 var winsize: posix.winsize = undefined;
-
-// counter clockwise vertices.
-// right hand coordinates.
-const mesh = [_]Vec3{
-    // front
-    .{ 1, 1, 1 }, // top-right
-    .{ -1, 1, 1 }, //  top-left
-    .{ -1, -1, 1 }, //  bottom-left
-    .{ 1, -1, 1 }, //  bottom-right
-    // back
-    .{ -1, 1, -1 }, // top-right
-    .{ 1, 1, -1 }, // top-left
-    .{ 1, -1, -1 }, // bottom-left
-    .{ -1, -1, -1 }, // bottom-right
-};
-const tris = [_][3]u8{
-    .{ 0, 1, 2 }, .{ 0, 2, 3 },
-    .{ 4, 5, 6 }, .{ 4, 6, 7 },
-    .{ 0, 3, 6 }, .{ 0, 6, 5 },
-    .{ 1, 4, 7 }, .{ 1, 7, 2 },
-    .{ 1, 0, 5 }, .{ 1, 5, 4 },
-    .{ 2, 7, 6 }, .{ 2, 6, 3 },
-};
 
 fn handle_sigint(_: posix.SIG) callconv(.c) void {
     should_quit.store(true, .release);
@@ -123,12 +101,14 @@ pub fn main(init: std.process.Init) !void {
     try posix.tcsetattr(posix.STDIN_FILENO, .NOW, raw);
     defer posix.tcsetattr(posix.STDIN_FILENO, .NOW, orig) catch {};
 
+    const cube = try obj.open("cube.obj", init.arena, init.io);
+
     // state of the cube
     var translate: Vec3 = .{ 0, 0, -3.5 };
     var yaw_a: f32 = 0;
     var pitch_a: f32 = 0;
     var last_fps: u64 = 0;
-    var out: [mesh.len]Vec3 = undefined;
+    var out: [4 * 3]Vec3 = undefined;
     var curr_keys_down: packed struct(u10) {
         w: bool,
         a: bool,
@@ -165,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
 
         @memcpy(buf, cleared);
 
-        inline for (mesh, 0..) |v, i| {
+        for (cube.mesh, 0..) |v, i| {
             out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
         }
 
@@ -211,18 +191,21 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        for (tris) |t| {
-            const t0 = out[t[0]];
-            const t1 = out[t[1]];
-            const t2 = out[t[2]];
-            if (is_visible(t0, t1, t2)) {
-                _ = rasterize(
-                    screen_space(project(t0, aspect) * terminal_scale),
-                    screen_space(project(t1, aspect) * terminal_scale),
-                    screen_space(project(t2, aspect) * terminal_scale),
-                    buf,
-                );
-                continue;
+        {
+            var i: usize = 0;
+            while (i < cube.tris.len) : (i += 3) {
+                const t0 = out[cube.tris[i + 0]];
+                const t1 = out[cube.tris[i + 1]];
+                const t2 = out[cube.tris[i + 2]];
+                if (is_visible(t0, t1, t2)) {
+                    _ = rasterize(
+                        screen_space(project(t0, aspect) * terminal_scale),
+                        screen_space(project(t1, aspect) * terminal_scale),
+                        screen_space(project(t2, aspect) * terminal_scale),
+                        buf,
+                    );
+                    continue;
+                }
             }
         }
 
