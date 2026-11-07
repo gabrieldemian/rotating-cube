@@ -30,6 +30,8 @@ var cleared_framebuf: [framebuf.len]u8 = undefined;
 var stdinbuf: [100]u8 = undefined;
 var winsize: posix.winsize = undefined;
 
+const light = norm(Vec3{ 0, 0, -1 });
+
 fn handle_sigint(_: posix.SIG) callconv(.c) void {
     should_quit.store(true, .release);
 }
@@ -103,12 +105,9 @@ pub fn main(init: std.process.Init) !void {
 
     const cube = try obj.open("cube.obj", init.arena, init.io);
 
-    // state of the cube
-    var translate: Vec3 = .{ 0, 0, -3.5 };
-    var yaw_a: f32 = 0;
-    var pitch_a: f32 = 0;
-    var last_fps: u64 = 0;
-    var out: [4 * 3]Vec3 = undefined;
+    var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
+    // print("out len: {d}\n", .{out.len});
+    // var out: [500]Vec3 = undefined;
     var curr_keys_down: packed struct(u10) {
         w: bool,
         a: bool,
@@ -126,6 +125,13 @@ pub fn main(init: std.process.Init) !void {
     for (0..@as(usize, rows) * cols) |i| {
         put_clear_cell(cleared, i);
     }
+
+    // state of the cube
+    var translate: Vec3 = .{ 0, 0, -3.5 };
+    var yaw_a: f32 = 0;
+    var pitch_a: f32 = 0;
+    var last_fps: u64 = 0;
+    var cube_a: f32 = 0;
 
     while (!should_quit.load(.acquire)) {
         if (should_resize.swap(false, .seq_cst)) {
@@ -145,8 +151,13 @@ pub fn main(init: std.process.Init) !void {
 
         @memcpy(buf, cleared);
 
+        cube_a += 0.008;
         for (cube.mesh, 0..) |v, i| {
+            // still
             out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
+            // rotating
+            // out[i] = pitch(yaw(v, cube_a), cube_a) + translate;
+            // out[i] = pitch(yaw(out[i], -yaw_a), -pitch_a);
         }
 
         const stdin_len = stdin.readStreaming(
@@ -193,18 +204,24 @@ pub fn main(init: std.process.Init) !void {
 
         {
             var i: usize = 0;
-            while (i < cube.tris.len) : (i += 3) {
-                const t0 = out[cube.tris[i + 0]];
-                const t1 = out[cube.tris[i + 1]];
-                const t2 = out[cube.tris[i + 2]];
+            while (i + 2 < cube.tris.len) : (i += 3) {
+                const t0 = out[cube.tris[i + 0] - 1];
+                const t1 = out[cube.tris[i + 1] - 1];
+                const t2 = out[cube.tris[i + 2] - 1];
+                // draw_line(
+                //     screen_space(project(t0, aspect) * terminal_scale),
+                //     screen_space(project(t1, aspect) * terminal_scale),
+                //     buf,
+                //     RED,
+                // );
                 if (is_visible(t0, t1, t2)) {
                     _ = rasterize(
                         screen_space(project(t0, aspect) * terminal_scale),
                         screen_space(project(t1, aspect) * terminal_scale),
                         screen_space(project(t2, aspect) * terminal_scale),
                         buf,
+                        lumi(t0, t1, t2),
                     );
-                    continue;
                 }
             }
         }
@@ -229,19 +246,36 @@ pub fn main(init: std.process.Init) !void {
         }
 
         try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + buf_extra]);
-        try init.io.sleep(
-            Io.Duration.fromMilliseconds(ms_to_sleep / 2),
-            Io.Clock.boot,
-        );
+        // try init.io.sleep(
+        //     Io.Duration.fromMilliseconds(ms_to_sleep / 2),
+        //     Io.Clock.boot,
+        // );
     }
 }
 
 /// Returns true if the triangle is visible.
-fn is_visible(v0: Vec3, v1: @Vector(3, f32), v2: @Vector(3, f32)) bool {
+fn is_visible(v0: Vec3, v1: Vec3, v2: Vec3) bool {
     if (v0[2] >= -0.1 or v1[2] >= -0.1 or v2[2] >= -0.1) return false;
     const n = norm(cross(v1 - v0, v2 - v0));
-    const cen = (v0 + v1 + v2) / @as(Vec3, @splat(3));
+    const centroid = Vec3{ 3, 3, 3 };
+    const cen = (v0 + v1 + v2) / centroid;
     return dot(n, norm(camera - cen)) > 0;
+}
+
+/// Return the normal of a triangle and point `p`
+fn vec_normal(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) f32 {
+    const n = norm(cross(v1 - v0, v2 - v0));
+    // const cen = (v0 + v1 + v2) / @as(Vec3, @splat(3));
+    return dot(n, norm(p - v0));
+}
+
+fn color_light(v: Vec3, c: RGB) RGB {
+    return @max(@round(c * lumi(v)), Vec3{ 0, 0, 0 });
+}
+
+/// Return luminescence of triangle between 0.2..1.0
+fn lumi(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
+    return @splat(@max(@min(vec_normal(light, v0, v1, v2), 1.0), 0.2));
 }
 
 /// From NDC space to screen space
@@ -249,11 +283,6 @@ fn screen_space(ndc: Vec2) @Vector(2, f32) {
     const w: f32 = @floatFromInt(cols);
     const h: f32 = @floatFromInt(rows);
     return .{ ndc[0] * w, ndc[1] * h };
-}
-
-// equivalent to  fov = 90° and aspect = 1
-fn weak_project(v: Vec3) Vec2 {
-    return .{ v[0] / v[2], v[1] / -v[2] };
 }
 
 /// Project vector and return NDC
@@ -339,7 +368,7 @@ fn draw_line(v0: Vec2, v1: Vec2, buf: []u8, rgb: RGB) void {
             v0[0] + ii * stepX,
         ));
         if (row >= 0 and row < rows and col >= 0 and col < cols) {
-            put_cell_fg(buf, @intCast(row * cols + col), line_char, rgb);
+            put_cell_fg(buf, @intCast(row * cols + col), rgb, line_char);
         }
     }
 }
@@ -372,7 +401,7 @@ fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
     return Vec3{ alpha, beta, gamma } / area;
 }
 
-fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
+fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, l: Vec3) void {
     const area = edge_cross(v0, v1, v2);
     // trick to divide once per triangle instead of per pixel
     // remove this if color interpolation is no longer used
@@ -419,13 +448,59 @@ fn rasterize(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8) void {
         while (x < x_end) : (x += 1) {
             if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                 const col: usize = @intCast(half_cols + x);
-                put_cell_bg(buf, row_start + col, @round(color));
+                put_cell_bg(buf, row_start + col, @round(color * l));
             }
             w += dw_dx;
             color += dc_dx;
         }
         wleft += dw_dy;
         color_left += dc_dy;
+    }
+}
+
+fn rasterize2(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, l: Vec3) void {
+    const color = @round(GREY * l);
+    const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
+    const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
+    const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
+    const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
+    const bias: Vec3 = .{
+        if (is_top_left(v1, v2)) 0 else -0.000001,
+        if (is_top_left(v2, v0)) 0 else -0.000001,
+        if (is_top_left(v0, v1)) 0 else -0.000001,
+    };
+    // don't loop over pixels outside the screen
+    const x_start: i32 = @max(x_min, -half_cols);
+    const x_end: i32 = @min(x_max, cols - half_cols);
+    const y_start: i32 = @max(y_min, half_rows - (rows - 1));
+    const y_end: i32 = @min(y_max, half_rows + 1);
+    var topleft = Vec2{ @floatFromInt(x_start), @floatFromInt(y_start) };
+    topleft += @splat(0.5);
+
+    // barycentric weights (determinants)
+    var wleft = (Vec3{
+        edge_cross(v1, v2, topleft),
+        edge_cross(v2, v0, topleft),
+        edge_cross(v0, v1, topleft),
+    } + bias);
+
+    const dw_dx = Vec3{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
+    const dw_dy = Vec3{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
+
+    var y = y_start;
+    while (y < y_end) : (y += 1) {
+        const row_start = @as(usize, @intCast(half_rows - y)) * cols;
+        var w = wleft;
+        var x = x_start;
+
+        while (x < x_end) : (x += 1) {
+            if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
+                const col: usize = @intCast(half_cols + x);
+                put_cell_bg(buf, row_start + col, color);
+            }
+            w += dw_dx;
+        }
+        wleft += dw_dy;
     }
 }
 
@@ -456,6 +531,7 @@ fn norm(v: anytype) @TypeOf(v) {
 const RED: RGB = .{ 255, 0, 0 };
 const GREEN: RGB = .{ 0, 255, 0 };
 const BLUE: RGB = .{ 0, 0, 255 };
+const GREY: RGB = .{ 190, 190, 190 };
 
 const ColorType = enum(u8) { fg = '3', bg = '4' };
 

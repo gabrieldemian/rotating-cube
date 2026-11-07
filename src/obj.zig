@@ -25,6 +25,8 @@ pub fn open(name: []const u8, arena: *std.heap.ArenaAllocator, io: Io) !Mesh {
     return try parse(filebuf, verts, tris);
 }
 
+var tmp: [8]usize = undefined;
+
 fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
     var it_lines = mem.splitScalar(u8, buf, '\n');
     var i_tris: usize = 0;
@@ -55,13 +57,14 @@ fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
 
             'f' => {
                 var it = mem.tokenizeScalar(u8, line[2..], ' ');
-                outer: while (it.next()) |idx| : (i_verts += 1) {
+
+                var i: usize = 0;
+                outer: while (it.next()) |idx| : (i += 1) {
                     var it_vn = mem.tokenizeAny(u8, idx, "//");
 
                     // f v1//vn1 v2//vn2 v3//vn3 => vertex and normals but no texture
                     if (it_vn.peek() != null) {
-                        verts[i_verts] =
-                            try std.fmt.parseUnsigned(usize, it_vn.next().?, 10);
+                        tmp[i] = try std.fmt.parseUnsigned(usize, it_vn.next().?, 10);
                         // todo: support normal
                         continue :outer;
                     }
@@ -72,14 +75,23 @@ fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
                     // f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3 =>
                     //     vertex, texture coords, normals
                     if (it_vtn.peek() != null) {
-                        verts[i_verts] =
+                        tmp[i] =
                             try std.fmt.parseUnsigned(usize, it_vtn.next().?, 10);
                         // todo: support normal and texture
                         continue :outer;
                     }
 
                     // f v1 v2 v3
-                    verts[i_verts] = try std.fmt.parseUnsigned(usize, idx, 10);
+                    tmp[i] = try std.fmt.parseUnsigned(usize, idx, 10);
+                }
+
+                // break down quads (or more) into triangles
+                var k: usize = 1;
+                while (k + 1 < i) : (k += 1) {
+                    verts[i_verts + 0] = tmp[0];
+                    verts[i_verts + 1] = tmp[k];
+                    verts[i_verts + 2] = tmp[k + 1];
+                    i_verts += 3;
                 }
             },
             // g text => groups
@@ -125,18 +137,19 @@ test "parse" {
         try expect(v[2] == e[2]);
     }
 
+    // obj files are 1 index based
     try expect(std.mem.eql(usize, res.tris, &[_]usize{
-        0, 1, 2,
-        0, 2, 3,
-        4, 5, 6,
-        4, 6, 7,
-        0, 3, 6,
-        0, 6, 5,
+        1, 2, 3,
+        1, 3, 4,
+        5, 6, 7,
+        5, 7, 8,
         1, 4, 7,
-        1, 7, 2,
-        1, 0, 5,
-        1, 5, 4,
-        2, 7, 6,
-        2, 6, 3,
+        1, 7, 6,
+        2, 5, 8,
+        2, 8, 3,
+        2, 1, 6,
+        2, 6, 5,
+        3, 8, 7, // i 33 + 3 = 36
+        3, 7, 4, // i 36
     }));
 }
