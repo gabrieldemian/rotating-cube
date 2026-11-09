@@ -27,9 +27,6 @@ pub fn main(init: std.process.Init) !void {
     var buf =
         framebuf[buf_extra..(@as(usize, term.cols) * term.rows * term.cell_size + buf_extra)];
 
-    const terminal_scale = Vec3{ 1, 0.5, 1 };
-    var aspect = @as(f32, @floatFromInt(term.cols)) / @as(f32, @floatFromInt(term.rows));
-
     const clock = std.Io.Clock.boot;
     var last = clock.now(init.io);
     var frames: u64 = 0;
@@ -67,7 +64,6 @@ pub fn main(init: std.process.Init) !void {
             term.resize(stdout);
             buf = framebuf[buf_extra .. (@as(usize, term.cols) * term.rows * term.cell_size) + buf_extra];
             cleared = cleared_framebuf[0..buf.len];
-            aspect = @as(f32, @floatFromInt(term.cols)) / @as(f32, @floatFromInt(term.rows));
             zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
             for (0..@as(usize, term.rows) * term.cols) |i| {
                 term.put_clear_cell(cleared, i);
@@ -148,26 +144,35 @@ pub fn main(init: std.process.Init) !void {
                 const t0 = out[cube.tris[i + 0] - 1];
                 const t1 = out[cube.tris[i + 1] - 1];
                 const t2 = out[cube.tris[i + 2] - 1];
-                if (utils.is_visible(t0, t1, t2)) {
-                    // draw_line3(
-                    //     screen_space(project(t0, aspect) * terminal_scale),
-                    //     screen_space(project(t1, aspect) * terminal_scale),
-                    //     screen_space(project(t2, aspect) * terminal_scale),
-                    //     buf,
-                    //     RED,
-                    // );
 
-                    const p0 = project(t0, aspect) * terminal_scale;
-                    const p1 = project(t1, aspect) * terminal_scale;
-                    const p2 = project(t2, aspect) * terminal_scale;
+                if (utils.backface_cull(t0, t1, t2)) {
+                    continue;
+                }
 
+                // world space -> project (clip space, divide, NDC) -> screen space 2D
+                // draw_line3(
+                //     screen_space(project(t0, aspect) * terminal_scale),
+                //     screen_space(project(t1, aspect) * terminal_scale),
+                //     screen_space(project(t2, aspect) * terminal_scale),
+                //     buf,
+                //     RED,
+                // );
+
+                const lll = lumi(t0, t1, t2);
+                const c0 = utils.project2(t0, term.aspect);
+                const c1 = utils.project2(t1, term.aspect);
+                const c2 = utils.project2(t2, term.aspect);
+                const ndcs = utils.clip(c0, c1, c2);
+
+                var j: usize = 0;
+                while (j + 2 < ndcs.len) : (j += 3) {
                     _ = rasterize(
-                        screen_space(p0),
-                        screen_space(p1),
-                        screen_space(p2),
+                        utils.screen_space2(ndcs[j + 0]),
+                        utils.screen_space2(ndcs[j + 1]),
+                        utils.screen_space2(ndcs[j + 2]),
                         buf,
                         zbuf,
-                        lumi(t0, t1, t2),
+                        lll,
                     );
                 }
             }
@@ -225,14 +230,14 @@ fn draw_line(v0: anytype, v1: anytype, buf: []u8, rgb: RGB) void {
     }
 }
 
-fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: RGB) void {
+inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: RGB) void {
     draw_line(v0, v1, buf, rgb);
     draw_line(v1, v2, buf, rgb);
     draw_line(v2, v0, buf, rgb);
 }
 
 // top left convention to solve overdraw
-fn is_top_left(start: Vec2, end: Vec2) bool {
+inline fn is_top_left(start: Vec2, end: Vec2) bool {
     const e = end - start;
     return e[1] > 0 or (e[1] == 0 and e[0] < 0);
 }
@@ -241,22 +246,20 @@ fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) v
     const v0 = Vec2{ vv0[0], vv0[1] };
     const v1 = Vec2{ vv1[0], vv1[1] };
     const v2 = Vec2{ vv2[0], vv2[1] };
+
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
+
+    var topleft = Vec2{ @floatFromInt(x_min), @floatFromInt(y_min) };
+    topleft += @splat(0.5);
+
     const bias: Vec3 = .{
         if (is_top_left(v1, v2)) 0 else -0.0000001,
         if (is_top_left(v2, v0)) 0 else -0.0000001,
         if (is_top_left(v0, v1)) 0 else -0.0000001,
     };
-    // don't loop over pixels outside the screen
-    const x_start: i32 = @max(x_min, -term.half_cols);
-    const x_end: i32 = @min(x_max, term.cols - term.half_cols);
-    const y_start: i32 = @max(y_min, term.half_rows - (term.rows - 1));
-    const y_end: i32 = @min(y_max, term.half_rows + 1);
-    var topleft = Vec2{ @floatFromInt(x_start), @floatFromInt(y_start) };
-    topleft += @splat(0.5);
 
     const inv_area = 1.0 / utils.edge_cross(v0, v1, v2);
     var wleft = (Vec3{
@@ -272,15 +275,15 @@ fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) v
     const dz_dy = (dw_dy[0] * vv0[2] + dw_dy[1] * vv1[2] + dw_dy[2] * vv2[2]) * inv_area;
 
     var z_left = (wleft[0] * vv0[2] + wleft[1] * vv1[2] + wleft[2] * vv2[2]) * inv_area;
-    var y = y_start;
+    var y = y_min;
 
-    while (y < y_end) : (y += 1) {
-        const row_start = @as(usize, @intCast(term.half_rows - y)) * term.cols;
+    while (y < y_max) : (y += 1) {
+        const row_start = @as(usize, @intCast(term.half_rows - 1 - y)) * term.cols;
         var w = wleft;
-        var x = x_start;
+        var x = x_min;
         var z = z_left;
 
-        while (x < x_end) : (x += 1) {
+        while (x < x_max) : (x += 1) {
             if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                 const col: usize = @intCast(term.half_cols + x);
                 if (z < zbuf[row_start + col]) {
@@ -292,52 +295,6 @@ fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) v
             z += dz_dx;
         }
         z_left += dz_dy;
-        wleft += dw_dy;
-    }
-}
-
-fn rasterize2(v0: Vec2, v1: Vec2, v2: Vec2, buf: []u8, l: Vec3) void {
-    const color = @round(GREY * l);
-    const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
-    const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
-    const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
-    const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-    const bias: Vec3 = .{
-        if (is_top_left(v1, v2)) 0 else -0.000001,
-        if (is_top_left(v2, v0)) 0 else -0.000001,
-        if (is_top_left(v0, v1)) 0 else -0.000001,
-    };
-    // don't loop over pixels outside the screen
-    const x_start: i32 = @max(x_min, -term.half_cols);
-    const x_end: i32 = @min(x_max, term.cols - term.half_cols);
-    const y_start: i32 = @max(y_min, term.half_rows - (term.rows - 1));
-    const y_end: i32 = @min(y_max, term.half_rows + 1);
-    var topleft = Vec2{ @floatFromInt(x_start), @floatFromInt(y_start) };
-    topleft += @splat(0.5);
-
-    // barycentric weights (determinants)
-    var wleft = (Vec3{
-        utils.edge_cross(v1, v2, topleft),
-        utils.edge_cross(v2, v0, topleft),
-        utils.edge_cross(v0, v1, topleft),
-    } + bias);
-
-    const dw_dx = Vec3{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
-    const dw_dy = Vec3{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
-
-    var y = y_start;
-    while (y < y_end) : (y += 1) {
-        const row_start = @as(usize, @intCast(term.half_rows - y)) * term.cols;
-        var w = wleft;
-        var x = x_start;
-
-        while (x < x_end) : (x += 1) {
-            if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
-                const col: usize = @intCast(term.half_cols + x);
-                term.put_cell_bg(buf, row_start + col, color);
-            }
-            w += dw_dx;
-        }
         wleft += dw_dy;
     }
 }

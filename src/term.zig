@@ -11,6 +11,12 @@ pub var rows: u16 = 1;
 pub var half_cols: i32 = 0;
 pub var half_rows: i32 = 0;
 
+pub var halfcolsrows = root.Vec3{ 1, 1, 1 };
+pub var colsrows = root.Vec2{ 1, 1 };
+pub var aspect: f32 = 8;
+
+pub const terminal_scale = root.Vec3{ 0.5, 0.5, 1 };
+
 // \x1b[38;2;25;10;200mtext_go_here
 fn put_cell(buf: []u8, i: usize, rgb: RGB, char: u8, code: ColorType) void {
     const offset: usize = i * cell_size;
@@ -106,5 +112,8 @@ pub fn resize(stdout: std.Io.File) void {
         rows = winsize.row;
         half_cols = cols / 2;
         half_rows = rows / 2;
+        halfcolsrows = .{ @floatFromInt(half_cols), @floatFromInt(half_rows), 1 };
+        colsrows = .{ @floatFromInt(cols), @floatFromInt(rows) };
+        aspect = colsrows[0] / (colsrows[1] * 2);
     }
 }

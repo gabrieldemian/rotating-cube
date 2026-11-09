@@ -5,69 +5,166 @@ const math = std.math;
 
 pub const Vec2 = @Vector(2, f32);
 pub const Vec3 = @Vector(3, f32);
+pub const Vec4 = @Vector(4, f32);
 pub const RGB = Vec3;
 
 const light = norm(Vec3{ 0, 0, -1 });
 const camera = Vec3{ 0, 0, 0 };
 
 /// Backface culling.
-/// Returns true if the triangle is visible.
-pub fn is_visible(v0: Vec3, v1: Vec3, v2: Vec3) bool {
-    if (v0[2] >= -0.1 or v1[2] >= -0.1 or v2[2] >= -0.1) return false;
-    return normdot(camera, v0, v1, v2) > 0;
+/// Returns true if the triangle should be culled.
+pub inline fn backface_cull(v0: Vec3, v1: Vec3, v2: Vec3) bool {
+    const n = cross(v1 - v0, v2 - v0);
+    return dot(n, camera - v0) < 0;
+}
+
+/// Backface culling in NDC space.
+/// Return true if should be culled.
+pub inline fn backface_cull_ndc(v0: Vec3, v1: Vec3, v2: Vec3) bool {
+    return (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]) <= 0;
 }
 
 /// Return the normal of a triangle (a ray that points outwards).
-pub fn normal(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
+pub inline fn normal(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
     return norm(cross(v1 - v0, v2 - v0));
 }
 
 /// Cast a ray between point `p` and triangle `v` and return the dot product.
-pub fn normdot(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) f32 {
+pub inline fn normdot(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) f32 {
     return dot(normal(v0, v1, v2), norm(p - v0));
 }
 
-pub fn color_light(v: Vec3, c: RGB) RGB {
+pub inline fn color_light(v: Vec3, c: RGB) RGB {
     return @max(@round(c * lumi(v)), Vec3{ 0, 0, 0 });
 }
 
 /// Return luminescence of triangle between 0.2..1.0
-pub fn lumi(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
-    return @splat(@max(@min(normdot(light, v0, v1, v2), 1.0), 0.2));
+pub inline fn lumi(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
+    return @splat(math.clamp(normdot(light, v0, v1, v2), 0.2, 0.8));
 }
 
-/// From NDC space to screen space
-pub fn screen_space(ndc: Vec3) Vec3 {
-    const w: f32 = @floatFromInt(term.cols);
-    const h: f32 = @floatFromInt(term.rows);
-    return .{ ndc[0] * w, ndc[1] * h, ndc[2] };
+/// From NDC (-1 to 1) space to screen space/view space.
+/// On a real game: [-960, +960] = 1920px
+/// this way we get centered pixels and can get buffer index easily.
+pub inline fn screen_space2(ndc: Vec3) Vec3 {
+    return ndc * term.halfcolsrows;
 }
 
-/// Project vector and return NDC
-pub fn project(v: Vec3, a: f32) Vec3 {
-    const fov: f32 = math.pi / 3.0;
+/// From world space to clip space.
+pub fn project2(v: Vec3, aspect: f32) Vec4 {
+    // deg = rad * 180 / PI
+    // math.pi / 2 = 180/2 = 90°
+    // math.pi / 3 = 180/3 = 60°
+    const fov: f32 = math.pi / 2.0;
     const near: f32 = 0.1;
-    const far = 100;
+    const far = 300;
 
     const top = near * @tan(fov / 2);
     const bottom = -top;
-    const right = top * a;
+    const right = top * aspect;
     const left = -right;
 
-    const x1 =
+    const xc =
         v[0] * (2 * near / (right - left)) +
         v[2] * (right + left) / (right - left);
-    const y1 =
+    const yc =
         v[1] * (2 * near) / (top - bottom) +
         v[2] * (top + bottom) / (top - bottom);
-    const z1 =
+    const zc =
         v[2] * (far + near) / (near - far) +
         2 * far * near / (near - far);
     const w = -v[2];
 
-    // clip space before the divide by w
+    return .{ xc, yc, zc, w };
+}
 
-    return .{ x1 / w, y1 / w, z1 / w };
+var clipbuf: [24]Vec3 = undefined;
+
+const Plane = struct { axis: u2, sign: f32 };
+
+// near, left, right, bottom, top — near first so w > 0 afterwards.
+const planes = [_]Plane{
+    // zig fmt: off
+    .{ .axis = 2, .sign = 1.0 },  // near   z >= -w
+    .{ .axis = 0, .sign = 1.0 },  // left   x >= -w
+    .{ .axis = 0, .sign = -1.0 }, // right  x <=  w
+    .{ .axis = 1, .sign = 1.0 },  // bottom y >= -w
+    .{ .axis = 1, .sign = -1.0 }, // top    y <=  w
+    // .{ .axis = 2, .sign = -1.0 }, // far    z <=  w
+    // zig fmt: on
+};
+
+fn clip_plane(src: []const Vec4, dst: []Vec4, pl: Plane) usize {
+    if (src.len == 0) return 0;
+
+    var n: usize = 0;
+    var prev = src[src.len - 1];
+    const prev_arr: [4]f32 = prev;
+    var dprev = pl.sign * prev_arr[pl.axis] + prev_arr[3];
+
+    for (src) |curr| {
+        const curr_arr: [4]f32 = curr;
+        const dcurr = pl.sign * curr_arr[pl.axis] + curr_arr[3];
+        const pin = dprev >= 0;
+        const cin = dcurr >= 0;
+        const t: Vec4 = @splat(dprev / (dprev - dcurr));
+
+        if (pin and cin) {
+            dst[n] = curr;
+            n += 1;
+        } else if (pin and !cin) {
+            dst[n] = prev + t * (curr - prev);
+            n += 1;
+        } else if (!pin and cin) {
+            dst[n] = prev + t * (curr - prev);
+            n += 1;
+            dst[n] = curr;
+            n += 1;
+        }
+        prev = curr;
+        dprev = dcurr;
+    }
+    return n;
+}
+
+// Clip a triangle in clip space to NDC [-1 1] and Z [0 1].
+pub fn clip(c0: Vec4, c1: Vec4, c2: Vec4) []Vec3 {
+    var a: [12]Vec4 = undefined;
+    a[0] = c0;
+    a[1] = c1;
+    a[2] = c2;
+    var b: [12]Vec4 = undefined;
+    var len: usize = 3;
+    var src: []Vec4 = &a;
+    var dst: []Vec4 = &b;
+
+    for (planes) |pl| {
+        len = clip_plane(src[0..len], dst, pl);
+        if (len == 0) return &.{};
+        const t = src;
+        src = dst;
+        dst = t;
+    }
+
+    var ndc: [12]Vec3 = undefined;
+    for (0..len) |i| {
+        const v = src[i];
+        ndc[i] = .{
+            // clamp to make sure its always in bounds to NDC
+            math.clamp(v[0] / v[3], -1.0, 1.0),
+            math.clamp(v[1] / v[3], -1.0, 1.0),
+            math.clamp(v[2] / v[3], -1.0, 1.0),
+        };
+    }
+
+    // fan triangulate
+    const tris = len - 2;
+    for (0..tris) |i| {
+        clipbuf[3 * i + 0] = ndc[0];
+        clipbuf[3 * i + 1] = ndc[i + 1];
+        clipbuf[3 * i + 2] = ndc[i + 2];
+    }
+    return clipbuf[0 .. tris * 3];
 }
 
 pub fn move_z(v: Vec3, d: f32) Vec3 {
@@ -102,17 +199,17 @@ pub fn rotate_y(v: Vec3, a: f32) Vec3 {
 }
 
 /// Normalize vector `v`
-pub fn norm(v: anytype) @TypeOf(v) {
+pub inline fn norm(v: anytype) @TypeOf(v) {
     return v / @as(@TypeOf(v), @splat(magnitude(v)));
 }
 
 /// |v|
-pub fn magnitude(v: anytype) f32 {
+pub inline fn magnitude(v: anytype) f32 {
     return @sqrt(@reduce(.Add, v * v));
 }
 
 /// a × b
-pub fn cross(a: Vec3, b: Vec3) Vec3 {
+pub inline fn cross(a: Vec3, b: Vec3) Vec3 {
     return .{
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -121,12 +218,12 @@ pub fn cross(a: Vec3, b: Vec3) Vec3 {
 }
 
 /// a · b
-pub fn dot(a: anytype, b: anytype) f32 {
+pub inline fn dot(a: anytype, b: anytype) f32 {
     return @reduce(.Add, a * b);
 }
 
 /// Return a positive number if `p` is on the left side of `a` and `b`
-pub fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
+pub inline fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
     const ab = b - a;
     const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
@@ -148,7 +245,7 @@ test "cull" {
     const a = move_z(Vec3{ 1, 1, 1 }, -3.5);
     const b = move_z(Vec3{ -1, 1, 1 }, -3.5);
     const c = move_z(Vec3{ -1, -1, 1 }, -3.5);
-    try expect(is_visible(a, b, c));
+    try expect(!backface_cull(a, b, c));
 }
 
 test "cull_2" {
@@ -156,7 +253,7 @@ test "cull_2" {
     const a = Vec3{ -3, 3, -3 };
     const b = Vec3{ 3, 3, -3 };
     const c = Vec3{ 3, -3, -3 };
-    try expect(!is_visible(a, b, c));
+    try expect(backface_cull(a, b, c));
 
     // rotated back triangle -> front triangle
     //
@@ -165,7 +262,7 @@ test "cull_2" {
     //
     // const center = (a + b + c) / @as(Vec3, @splat(3));
     const move_to_camera = Vec3{ 1, 1, -3 };
-    try expect(is_visible(
+    try expect(!backface_cull(
         yaw(a, math.pi) * move_to_camera,
         yaw(b, math.pi) * move_to_camera,
         yaw(c, math.pi) * move_to_camera,
