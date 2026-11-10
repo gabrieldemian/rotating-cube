@@ -32,8 +32,6 @@ pub fn main(init: std.process.Init) !void {
     var frames: u64 = 0;
     var fps_ns: u32 = 0;
 
-    const cube = try obj.open("mountains.obj", init.arena, init.io);
-
     var curr_keys_down: packed struct(u10) {
         w: bool,
         a: bool,
@@ -56,7 +54,18 @@ pub fn main(init: std.process.Init) !void {
     var yaw_a: f32 = 0;
     var pitch_a: f32 = 0;
     var last_fps: u64 = 0;
-    var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
+
+    const vert_count = 8;
+    const faces_count = 12;
+    const cube = try obj.open_known(
+        "cube.obj",
+        init.arena,
+        init.io,
+        vert_count,
+        faces_count,
+    );
+    var out: [vert_count]Vec3 = undefined;
+    // var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
     var zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
 
     while (!should_quit.load(.acquire)) {
@@ -130,9 +139,9 @@ pub fn main(init: std.process.Init) !void {
         // --------------
 
         // cube_a += 0.008;
-        for (cube.mesh, 0..) |v, i| {
+        inline for (0..vert_count) |i| {
             // still
-            out[i] = pitch(yaw(v + translate, -yaw_a), -pitch_a);
+            out[i] = pitch(yaw(cube.mesh[i] + translate, -yaw_a), -pitch_a);
             // rotating
             // out[i] = pitch(yaw(v, cube_a), cube_a) + translate;
             // out[i] = pitch(yaw(out[i], -yaw_a), -pitch_a);
@@ -140,40 +149,40 @@ pub fn main(init: std.process.Init) !void {
 
         {
             var i: usize = 0;
-            while (i + 2 < cube.tris.len) : (i += 3) {
-                const t0 = out[cube.tris[i + 0] - 1];
-                const t1 = out[cube.tris[i + 1] - 1];
-                const t2 = out[cube.tris[i + 2] - 1];
+            while (i + 2 < cube.faces.len) : (i += 3) {
+                const t0 = out[cube.faces[i + 0]];
+                const t1 = out[cube.faces[i + 1]];
+                const t2 = out[cube.faces[i + 2]];
 
                 if (utils.backface_cull(t0, t1, t2)) {
                     continue;
                 }
 
                 // world space -> project (clip space, divide, NDC) -> screen space 2D
-                // draw_line3(
-                //     screen_space(project(t0, aspect) * terminal_scale),
-                //     screen_space(project(t1, aspect) * terminal_scale),
-                //     screen_space(project(t2, aspect) * terminal_scale),
-                //     buf,
-                //     RED,
-                // );
 
-                const lll = lumi(t0, t1, t2);
-                const c0 = utils.project2(t0, term.aspect);
-                const c1 = utils.project2(t1, term.aspect);
-                const c2 = utils.project2(t2, term.aspect);
+                const light = lumi(t0, t1, t2);
+                const c0 = utils.project(t0, term.aspect);
+                const c1 = utils.project(t1, term.aspect);
+                const c2 = utils.project(t2, term.aspect);
                 const ndcs = utils.clip(c0, c1, c2);
 
                 var j: usize = 0;
                 while (j + 2 < ndcs.len) : (j += 3) {
                     _ = rasterize(
-                        utils.screen_space2(ndcs[j + 0]),
-                        utils.screen_space2(ndcs[j + 1]),
-                        utils.screen_space2(ndcs[j + 2]),
+                        utils.screen_space(ndcs[j + 0]),
+                        utils.screen_space(ndcs[j + 1]),
+                        utils.screen_space(ndcs[j + 2]),
                         buf,
                         zbuf,
-                        lll,
+                        light,
                     );
+                    // draw_line3(
+                    //     utils.screen_space2(ndcs[j + 0]),
+                    //     utils.screen_space2(ndcs[j + 1]),
+                    //     utils.screen_space2(ndcs[j + 2]),
+                    //     buf,
+                    //     BLACK,
+                    // );
                 }
             }
         }
@@ -225,7 +234,7 @@ fn draw_line(v0: anytype, v1: anytype, buf: []u8, rgb: RGB) void {
             v0[0] + ii * stepX,
         ));
         if (row >= 0 and row < term.rows and col >= 0 and col < term.cols) {
-            term.put_cell_fg(buf, @intCast(row * term.cols + col), rgb, '.');
+            term.put_cell_fg(buf, @intCast(row * term.cols + col), rgb, '#');
         }
     }
 }
@@ -237,22 +246,18 @@ inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: RGB)
 }
 
 // top left convention to solve overdraw
-inline fn is_top_left(start: Vec2, end: Vec2) bool {
+inline fn is_top_left(start: anytype, end: anytype) bool {
     const e = end - start;
     return e[1] > 0 or (e[1] == 0 and e[0] < 0);
 }
 
-fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) void {
-    const v0 = Vec2{ vv0[0], vv0[1] };
-    const v1 = Vec2{ vv1[0], vv1[1] };
-    const v2 = Vec2{ vv2[0], vv2[1] };
-
+fn rasterize(v0: Vec3, v1: Vec3, v2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) void {
     const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
     const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
     const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
     const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
 
-    var topleft = Vec2{ @floatFromInt(x_min), @floatFromInt(y_min) };
+    var topleft = Vec3{ @floatFromInt(x_min), @floatFromInt(y_min), 0 };
     topleft += @splat(0.5);
 
     const bias: Vec3 = .{
@@ -271,10 +276,10 @@ fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) v
     const dw_dx = Vec3{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
     const dw_dy = Vec3{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
 
-    const dz_dx = (dw_dx[0] * vv0[2] + dw_dx[1] * vv1[2] + dw_dx[2] * vv2[2]) * inv_area;
-    const dz_dy = (dw_dy[0] * vv0[2] + dw_dy[1] * vv1[2] + dw_dy[2] * vv2[2]) * inv_area;
+    const dz_dx = (dw_dx[0] * v0[2] + dw_dx[1] * v1[2] + dw_dx[2] * v2[2]) * inv_area;
+    const dz_dy = (dw_dy[0] * v0[2] + dw_dy[1] * v1[2] + dw_dy[2] * v2[2]) * inv_area;
 
-    var z_left = (wleft[0] * vv0[2] + wleft[1] * vv1[2] + wleft[2] * vv2[2]) * inv_area;
+    var z_left = (wleft[0] * v0[2] + wleft[1] * v1[2] + wleft[2] * v2[2]) * inv_area;
     var y = y_min;
 
     while (y < y_max) : (y += 1) {
@@ -302,6 +307,7 @@ fn rasterize(vv0: Vec3, vv1: Vec3, vv2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) v
 const RED: RGB = .{ 255, 0, 0 };
 const GREEN: RGB = .{ 0, 255, 0 };
 const BLUE: RGB = .{ 0, 0, 255 };
+const BLACK: RGB = .{ 0, 0, 0 };
 const GREY: RGB = .{ 190, 190, 190 };
 
 const std = @import("std");

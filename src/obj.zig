@@ -8,8 +8,22 @@ pub const Mesh = struct {
     // vertices
     mesh: []Vec3,
     // faces (triangles)
-    tris: []usize,
+    faces: []usize,
 };
+
+/// Same as `open` but vertices and faces are comptime known and asserted after parsing.
+pub fn open_known(
+    name: []const u8,
+    arena: *std.heap.ArenaAllocator,
+    io: Io,
+    vert_count: usize,
+    faces_count: usize,
+) !Mesh {
+    const mesh = try open(name, arena, io);
+    std.debug.assert(mesh.mesh.len == vert_count);
+    std.debug.assert(mesh.faces.len == faces_count * 3);
+    return mesh;
+}
 
 pub fn open(name: []const u8, arena: *std.heap.ArenaAllocator, io: Io) !Mesh {
     const gpa = arena.allocator();
@@ -27,10 +41,10 @@ pub fn open(name: []const u8, arena: *std.heap.ArenaAllocator, io: Io) !Mesh {
 
 var tmp: [8]usize = undefined;
 
-fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
+fn parse(buf: []const u8, faces: []usize, vertices: []Vec3) !Mesh {
     var it_lines = mem.splitScalar(u8, buf, '\n');
-    var i_tris: usize = 0;
-    var i_verts: usize = 0;
+    var i_vert: usize = 0;
+    var i_face: usize = 0;
 
     while (it_lines.next()) |line| {
         if (line.len < 1) continue;
@@ -49,10 +63,10 @@ fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
                     else => continue,
                 }
                 var it = mem.tokenizeScalar(u8, line[2..], ' ');
-                tris[i_tris][0] = try std.fmt.parseFloat(f32, it.next().?);
-                tris[i_tris][1] = try std.fmt.parseFloat(f32, it.next().?);
-                tris[i_tris][2] = try std.fmt.parseFloat(f32, it.next().?);
-                i_tris += 1;
+                vertices[i_vert][0] = try std.fmt.parseFloat(f32, it.next().?);
+                vertices[i_vert][1] = try std.fmt.parseFloat(f32, it.next().?);
+                vertices[i_vert][2] = try std.fmt.parseFloat(f32, it.next().?);
+                i_vert += 1;
             },
 
             'f' => {
@@ -88,10 +102,11 @@ fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
                 // break down quads (or more) into triangles
                 var k: usize = 1;
                 while (k + 1 < i) : (k += 1) {
-                    verts[i_verts + 0] = tmp[0];
-                    verts[i_verts + 1] = tmp[k];
-                    verts[i_verts + 2] = tmp[k + 1];
-                    i_verts += 3;
+                    // obj files are 1 index based, i disrespect this
+                    faces[i_face + 0] = tmp[0] - 1;
+                    faces[i_face + 1] = tmp[k] - 1;
+                    faces[i_face + 2] = tmp[k + 1] - 1;
+                    i_face += 3;
                 }
             },
             // g text => groups
@@ -99,7 +114,7 @@ fn parse(buf: []const u8, verts: []usize, tris: []Vec3) !Mesh {
         }
     }
 
-    return .{ .mesh = tris[0..i_tris], .tris = verts[0..i_verts] };
+    return .{ .mesh = vertices[0..i_vert], .faces = faces[0..i_face] };
 }
 
 const expect = std.testing.expect;
@@ -138,7 +153,7 @@ test "parse" {
     }
 
     // obj files are 1 index based
-    try expect(std.mem.eql(usize, res.tris, &[_]usize{
+    try expect(std.mem.eql(usize, res.faces, &[_]usize{
         1, 2, 3,
         1, 3, 4,
         5, 6, 7,

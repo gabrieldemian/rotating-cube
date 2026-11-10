@@ -20,6 +20,7 @@ pub inline fn backface_cull(v0: Vec3, v1: Vec3, v2: Vec3) bool {
 
 /// Backface culling in NDC space.
 /// Return true if should be culled.
+/// usually slower then culling in world space.
 pub inline fn backface_cull_ndc(v0: Vec3, v1: Vec3, v2: Vec3) bool {
     return (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]) <= 0;
 }
@@ -39,19 +40,19 @@ pub inline fn color_light(v: Vec3, c: RGB) RGB {
 }
 
 /// Return luminescence of triangle between 0.2..1.0
-pub inline fn lumi(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
+pub inline fn lumi(v0: anytype, v1: anytype, v2: anytype) @TypeOf(v0) {
     return @splat(math.clamp(normdot(light, v0, v1, v2), 0.2, 0.8));
 }
 
 /// From NDC (-1 to 1) space to screen space/view space.
 /// On a real game: [-960, +960] = 1920px
 /// this way we get centered pixels and can get buffer index easily.
-pub inline fn screen_space2(ndc: Vec3) Vec3 {
+pub inline fn screen_space(ndc: Vec3) Vec3 {
     return ndc * term.halfcolsrows;
 }
 
 /// From world space to clip space.
-pub fn project2(v: Vec3, aspect: f32) Vec4 {
+pub fn project(v: Vec3, aspect: f32) Vec4 {
     // deg = rad * 180 / PI
     // math.pi / 2 = 180/2 = 90°
     // math.pi / 3 = 180/3 = 60°
@@ -223,7 +224,7 @@ pub inline fn dot(a: anytype, b: anytype) f32 {
 }
 
 /// Return a positive number if `p` is on the left side of `a` and `b`
-pub inline fn edge_cross(a: Vec2, b: Vec2, p: Vec2) f32 {
+pub inline fn edge_cross(a: anytype, b: anytype, p: anytype) f32 {
     const ab = b - a;
     const ap = p - a;
     return ab[0] * ap[1] - ab[1] * ap[0];
