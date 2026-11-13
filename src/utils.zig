@@ -35,18 +35,16 @@ pub inline fn normdot(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) f32 {
     return dot(normal(v0, v1, v2), norm(p - v0));
 }
 
-pub inline fn color_light(v: Vec3, c: RGB) RGB {
-    return @max(@round(c * lumi(v)), Vec3{ 0, 0, 0 });
+fn centroid(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
+    return (v0 + v1 + v2) / Vec3{ 3, 3, 3 };
 }
 
 /// Return luminescence of triangle between 0.2..1.0
 pub inline fn lumi(v0: anytype, v1: anytype, v2: anytype) @TypeOf(v0) {
-    return @splat(math.clamp(normdot(light, v0, v1, v2), 0.2, 0.8));
+    return @splat(math.clamp(normdot(light, v0, v1, v2), 0.9, 0.9));
 }
 
 /// From NDC (-1 to 1) space to screen space/view space.
-/// On a real game: [-960, +960] = 1920px
-/// this way we get centered pixels and can get buffer index easily.
 pub inline fn screen_space(ndc: Vec3) Vec3 {
     return ndc * term.halfcolsrows;
 }

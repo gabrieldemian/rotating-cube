@@ -1,7 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const root = @import("root");
-const RGB = root.RGB;
+const colors = @import("colors.zig");
 
 const ColorType = enum(u8) { fg = '3', bg = '4' };
 
@@ -18,7 +18,7 @@ pub var aspect: f32 = 8;
 pub const terminal_scale = root.Vec3{ 0.5, 0.5, 1 };
 
 // \x1b[38;2;25;10;200mtext_go_here
-fn put_cell(buf: []u8, i: usize, rgb: RGB, char: u8, code: ColorType) void {
+fn put_cell(buf: []u8, i: usize, rgb: colors.RGB, char: u8, code: ColorType) void {
     const offset: usize = i * cell_size;
     if (offset + cell_size > buf.len) return;
     buf[offset..][0..7].* = .{ 0x1b, '[', @backingInt(code), '8', ';', '2', ';' };
@@ -39,11 +39,11 @@ pub fn put_clear_cell(buf: []u8, i: usize) void {
     };
 }
 
-pub fn put_cell_fg(buf: []u8, i: usize, rgb: RGB, char: u8) void {
+pub fn put_cell_fg(buf: []u8, i: usize, rgb: colors.RGB, char: u8) void {
     put_cell(buf, i, rgb, char, .fg);
 }
 
-pub fn put_cell_bg(buf: []u8, i: usize, rgb: RGB) void {
+pub fn put_cell_bg(buf: []u8, i: usize, rgb: colors.RGB) void {
     put_cell(buf, i, rgb, ' ', .bg);
 }
 

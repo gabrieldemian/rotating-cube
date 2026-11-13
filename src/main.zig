@@ -1,6 +1,6 @@
 pub const Vec2 = @Vector(2, f32);
 pub const Vec3 = @Vector(3, f32);
-pub const RGB = Vec3;
+pub const Vec4 = @Vector(4, f32);
 
 const move_per_sec = 7.0;
 const fps: u32 = 60;
@@ -11,7 +11,7 @@ pub var should_quit = std.atomic.Value(bool).init(false);
 pub var should_resize = std.atomic.Value(bool).init(false);
 var framebuf: [300 * 150 * term.cell_size + buf_extra]u8 = undefined;
 var cleared_framebuf: [framebuf.len - buf_extra]u8 = undefined;
-var zbuf_raw: [300 * 150]f32 = undefined;
+pub var zbuf_raw: [300 * 150]f32 = undefined;
 var stdinbuf: [100]u8 = undefined;
 
 pub fn main(init: std.process.Init) !void {
@@ -55,17 +55,17 @@ pub fn main(init: std.process.Init) !void {
     var pitch_a: f32 = 0;
     var last_fps: u64 = 0;
 
-    const vert_count = 8;
-    const faces_count = 12;
-    const cube = try obj.open_known(
-        "cube.obj",
+    // const vert_count = 128_890;
+    // const faces_count = 128_835;
+    const cube = try mesh.Mesh.open(
+        "squirrel.obj",
+        // "squirrel_uv.png",
         init.arena,
         init.io,
-        vert_count,
-        faces_count,
     );
-    var out: [vert_count]Vec3 = undefined;
-    // var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
+
+    // var out: [vert_count]Vec3 = undefined;
+    var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
     var zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
 
     while (!should_quit.load(.acquire)) {
@@ -139,7 +139,7 @@ pub fn main(init: std.process.Init) !void {
         // --------------
 
         // cube_a += 0.008;
-        inline for (0..vert_count) |i| {
+        for (0..cube.mesh.len) |i| {
             // still
             out[i] = pitch(yaw(cube.mesh[i] + translate, -yaw_a), -pitch_a);
             // rotating
@@ -157,10 +157,9 @@ pub fn main(init: std.process.Init) !void {
                 if (utils.backface_cull(t0, t1, t2)) {
                     continue;
                 }
-
                 // world space -> project (clip space, divide, NDC) -> screen space 2D
 
-                const light = lumi(t0, t1, t2);
+                const light = utils.lumi(t0, t1, t2);
                 const c0 = utils.project(t0, term.aspect);
                 const c1 = utils.project(t1, term.aspect);
                 const c2 = utils.project(t2, term.aspect);
@@ -168,21 +167,17 @@ pub fn main(init: std.process.Init) !void {
 
                 var j: usize = 0;
                 while (j + 2 < ndcs.len) : (j += 3) {
-                    _ = rasterize(
+                    cube.rasterize(
                         utils.screen_space(ndcs[j + 0]),
                         utils.screen_space(ndcs[j + 1]),
                         utils.screen_space(ndcs[j + 2]),
+                        c0[3],
+                        c1[3],
+                        c2[3],
+                        i,
                         buf,
-                        zbuf,
                         light,
                     );
-                    // draw_line3(
-                    //     utils.screen_space2(ndcs[j + 0]),
-                    //     utils.screen_space2(ndcs[j + 1]),
-                    //     utils.screen_space2(ndcs[j + 2]),
-                    //     buf,
-                    //     BLACK,
-                    // );
                 }
             }
         }
@@ -203,7 +198,7 @@ pub fn main(init: std.process.Init) !void {
         const v = last_fps % 10000;
         inline for (.{ 1000, 100, 10, 1 }, 0..) |div, i| {
             const num: u8 = @intCast((v / div) % 10);
-            term.put_cell_fg(buf, i, RED, '0' + num);
+            term.put_cell_fg(buf, i, colors.RED, '0' + num);
         }
 
         try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + buf_extra]);
@@ -215,7 +210,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Draw line calculating slope and diffs.
-fn draw_line(v0: anytype, v1: anytype, buf: []u8, rgb: RGB) void {
+fn draw_line(v0: anytype, v1: anytype, buf: []u8, rgb: colors.RGB) void {
     // -1 or 1
     const dx = v1[0] - v0[0];
     const dy = v1[1] - v0[1];
@@ -239,76 +234,17 @@ fn draw_line(v0: anytype, v1: anytype, buf: []u8, rgb: RGB) void {
     }
 }
 
-inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: RGB) void {
+inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: colors.RGB) void {
     draw_line(v0, v1, buf, rgb);
     draw_line(v1, v2, buf, rgb);
     draw_line(v2, v0, buf, rgb);
 }
 
 // top left convention to solve overdraw
-inline fn is_top_left(start: anytype, end: anytype) bool {
+pub inline fn is_top_left(start: anytype, end: anytype) bool {
     const e = end - start;
     return e[1] > 0 or (e[1] == 0 and e[0] < 0);
 }
-
-fn rasterize(v0: Vec3, v1: Vec3, v2: Vec3, buf: []u8, zbuf: []f32, l: Vec3) void {
-    const x_min: i32 = @floor(@min(v0[0], v1[0], v2[0]));
-    const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
-    const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
-    const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-
-    var topleft = Vec3{ @floatFromInt(x_min), @floatFromInt(y_min), 0 };
-    topleft += @splat(0.5);
-
-    const bias: Vec3 = .{
-        if (is_top_left(v1, v2)) 0 else -0.0000001,
-        if (is_top_left(v2, v0)) 0 else -0.0000001,
-        if (is_top_left(v0, v1)) 0 else -0.0000001,
-    };
-
-    const inv_area = 1.0 / utils.edge_cross(v0, v1, v2);
-    var wleft = (Vec3{
-        utils.edge_cross(v1, v2, topleft),
-        utils.edge_cross(v2, v0, topleft),
-        utils.edge_cross(v0, v1, topleft),
-    } + bias); // divide by area for true bary and remove inv_area
-
-    const dw_dx = Vec3{ v1[1] - v2[1], v2[1] - v0[1], v0[1] - v1[1] };
-    const dw_dy = Vec3{ v2[0] - v1[0], v0[0] - v2[0], v1[0] - v0[0] };
-
-    const dz_dx = (dw_dx[0] * v0[2] + dw_dx[1] * v1[2] + dw_dx[2] * v2[2]) * inv_area;
-    const dz_dy = (dw_dy[0] * v0[2] + dw_dy[1] * v1[2] + dw_dy[2] * v2[2]) * inv_area;
-
-    var z_left = (wleft[0] * v0[2] + wleft[1] * v1[2] + wleft[2] * v2[2]) * inv_area;
-    var y = y_min;
-
-    while (y < y_max) : (y += 1) {
-        const row_start = @as(usize, @intCast(term.half_rows - 1 - y)) * term.cols;
-        var w = wleft;
-        var x = x_min;
-        var z = z_left;
-
-        while (x < x_max) : (x += 1) {
-            if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
-                const col: usize = @intCast(term.half_cols + x);
-                if (z < zbuf[row_start + col]) {
-                    zbuf[row_start + col] = z;
-                    term.put_cell_bg(buf, row_start + col, @round(GREY * l));
-                }
-            }
-            w += dw_dx;
-            z += dz_dx;
-        }
-        z_left += dz_dy;
-        wleft += dw_dy;
-    }
-}
-
-const RED: RGB = .{ 255, 0, 0 };
-const GREEN: RGB = .{ 0, 255, 0 };
-const BLUE: RGB = .{ 0, 0, 255 };
-const BLACK: RGB = .{ 0, 0, 0 };
-const GREY: RGB = .{ 190, 190, 190 };
 
 const std = @import("std");
 const Io = std.Io;
@@ -318,9 +254,11 @@ const posix = std.posix;
 const expect = std.testing.expect;
 
 const key = @import("key.zig");
-const obj = @import("obj.zig");
+const mesh = @import("mesh.zig");
 const term = @import("term.zig");
 const utils = @import("utils.zig");
+const colors = @import("colors.zig");
+const zigimg = @import("zigimg");
 const normal = utils.normal;
 const yaw = utils.yaw;
 const pitch = utils.pitch;
@@ -328,4 +266,3 @@ const magnitude = utils.magnitude;
 const dot = utils.dot;
 const project = utils.project;
 const screen_space = utils.screen_space;
-const lumi = utils.lumi;
