@@ -50,22 +50,35 @@ pub fn main(init: std.process.Init) !void {
         term.put_clear_cell(cleared, i);
     }
 
+    // globals from the camera
     var translate: Vec3 = .{ 0, 0, -3.5 };
-    var yaw_a: f32 = 0;
-    var pitch_a: f32 = 0;
+    var rotation: Vec2 = .{ 0, 0 };
     var last_fps: u64 = 0;
 
-    // const vert_count = 128_890;
-    // const faces_count = 128_835;
-    const cube = try mesh.Mesh.open(
-        "squirrel.obj",
-        // "squirrel_uv.png",
-        init.arena,
-        init.io,
-    );
+    var meshes = [_]Mesh{
+        try mesh.MeshTexture.open(
+            "squirrel.obj",
+            "squirrel_uv.png",
+            init.arena,
+            init.io,
+        ),
+        try mesh.Mesh.open(
+            "cube.obj",
+            init.arena,
+            init.io,
+        ),
+    };
+
+    meshes[0].translate[0] += 3;
+
+    var out_len: usize = 0;
+
+    for (meshes) |mesh_| {
+        out_len += mesh_.mesh.len;
+    }
 
     // var out: [vert_count]Vec3 = undefined;
-    var out = try init.arena.allocator().alloc(Vec3, cube.mesh.len);
+    var out = try init.arena.allocator().alloc(Vec3, out_len);
     var zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
 
     while (!should_quit.load(.acquire)) {
@@ -119,14 +132,14 @@ pub fn main(init: std.process.Init) !void {
         inline for (0.., @typeInfo(@TypeOf(curr_keys_down)).@"struct".field_names) |i, n| {
             if (@field(curr_keys_down, n)) {
                 switch (i) {
-                    0 => translate += yaw(Vec3{ 0, 0, d }, yaw_a),
-                    1 => translate += yaw(Vec3{ d, 0, 0 }, yaw_a),
-                    2 => translate += yaw(Vec3{ 0, 0, -d }, yaw_a),
-                    3 => translate += yaw(Vec3{ -d, 0, 0 }, yaw_a),
-                    4 => yaw_a += d * 0.3,
-                    5 => pitch_a -= d * 0.3,
-                    6 => pitch_a += d * 0.3,
-                    7 => yaw_a -= d * 0.3,
+                    0 => translate += yaw(Vec3{ 0, 0, d }, rotation[0]),
+                    1 => translate += yaw(Vec3{ d, 0, 0 }, rotation[0]),
+                    2 => translate += yaw(Vec3{ 0, 0, -d }, rotation[0]),
+                    3 => translate += yaw(Vec3{ -d, 0, 0 }, rotation[0]),
+                    4 => rotation[0] += d * 0.3,
+                    5 => rotation[1] -= d * 0.3,
+                    6 => rotation[1] += d * 0.3,
+                    7 => rotation[0] -= d * 0.3,
                     8 => translate += Vec3{ 0, -d, 0 },
                     9 => translate += Vec3{ 0, d, 0 },
                     else => unreachable,
@@ -138,47 +151,34 @@ pub fn main(init: std.process.Init) !void {
         //    pipeline
         // --------------
 
-        // cube_a += 0.008;
-        for (0..cube.mesh.len) |i| {
-            // still
-            out[i] = pitch(yaw(cube.mesh[i] + translate, -yaw_a), -pitch_a);
-            // rotating
-            // out[i] = pitch(yaw(v, cube_a), cube_a) + translate;
-            // out[i] = pitch(yaw(out[i], -yaw_a), -pitch_a);
+        {
+            var out_i: usize = 0;
+            for (meshes) |mesh_| {
+                for (0..mesh_.mesh.len) |i| {
+                    // still
+                    out[out_i] = pitch(
+                        yaw(mesh_.mesh[i] + translate + mesh_.translate, -rotation[0]),
+                        -rotation[1],
+                    );
+                    out_i += 1;
+                }
+            }
         }
 
         {
-            var i: usize = 0;
-            while (i + 2 < cube.faces.len) : (i += 3) {
-                const t0 = out[cube.faces[i + 0]];
-                const t1 = out[cube.faces[i + 1]];
-                const t2 = out[cube.faces[i + 2]];
-
-                if (utils.backface_cull(t0, t1, t2)) {
-                    continue;
-                }
+            var out_skip: usize = 0;
+            for (meshes) |mesh_| {
+                var face_i: usize = 0;
                 // world space -> project (clip space, divide, NDC) -> screen space 2D
-
-                const light = utils.lumi(t0, t1, t2);
-                const c0 = utils.project(t0, term.aspect);
-                const c1 = utils.project(t1, term.aspect);
-                const c2 = utils.project(t2, term.aspect);
-                const ndcs = utils.clip(c0, c1, c2);
-
-                var j: usize = 0;
-                while (j + 2 < ndcs.len) : (j += 3) {
-                    cube.rasterize(
-                        utils.screen_space(ndcs[j + 0]),
-                        utils.screen_space(ndcs[j + 1]),
-                        utils.screen_space(ndcs[j + 2]),
-                        c0[3],
-                        c1[3],
-                        c2[3],
-                        i,
-                        buf,
-                        light,
-                    );
+                while (face_i + 2 < mesh_.faces.len) : (face_i += 3) {
+                    const tri = [_]Vec3{
+                        out[out_skip..][mesh_.faces[face_i + 0]],
+                        out[out_skip..][mesh_.faces[face_i + 1]],
+                        out[out_skip..][mesh_.faces[face_i + 2]],
+                    };
+                    mesh_.rasterize(face_i, tri, buf);
                 }
+                out_skip += mesh_.mesh.len;
             }
         }
 
@@ -255,6 +255,7 @@ const expect = std.testing.expect;
 
 const key = @import("key.zig");
 const mesh = @import("mesh.zig");
+const Mesh = mesh.Mesh;
 const term = @import("term.zig");
 const utils = @import("utils.zig");
 const colors = @import("colors.zig");

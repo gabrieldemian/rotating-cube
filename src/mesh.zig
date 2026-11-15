@@ -24,6 +24,10 @@ pub const Mesh = struct {
     /// faces. indexes `mesh`.
     faces: []usize,
 
+    /// Yaw and pitch angles.
+    rotation: Vec2 = .{ 0, 0 },
+    translate: Vec3 = .{ 0, 0, 0 },
+
     pub fn open(
         name: []const u8,
         arena: *std.heap.ArenaAllocator,
@@ -42,36 +46,38 @@ pub const Mesh = struct {
         return try parse_no_texture(filebuf, verts, tris);
     }
 
-    pub fn rasterize(
-        self: Mesh,
-        v0: Vec3,
-        v1: Vec3,
-        v2: Vec3,
-        w0: f32,
-        w1: f32,
-        w2: f32,
-        start_face_i: usize,
-        buf: []u8,
-        light: Vec3,
-    ) void {
-        const c0 = utils.project(t0, term.aspect);
-        const c1 = utils.project(t1, term.aspect);
-        const c2 = utils.project(t2, term.aspect);
+    pub fn rasterize(self: Mesh, start_face_i: usize, tri: [3]Vec3, buf: []u8) void {
+        if (utils.backface_cull(tri[0], tri[1], tri[2])) {
+            return;
+        }
+        const c0 = utils.project(tri[0], term.aspect);
+        const c1 = utils.project(tri[1], term.aspect);
+        const c2 = utils.project(tri[2], term.aspect);
+        const light = utils.lumi(tri[0], tri[1], tri[2]);
         const ndcs = utils.clip(c0, c1, c2);
 
-        switch (self.kind) {
-            .no_texture => Mesh.rasterize_notexture(v0, v1, v2, buf, light),
-            .texture => mesh_textures[self.extra_index].rasterize(
-                v0,
-                v1,
-                v2,
-                w0,
-                w1,
-                w2,
-                start_face_i,
-                buf,
-                light,
-            ),
+        var i: usize = 0;
+        while (i + 2 < ndcs.len) : (i += 3) {
+            switch (self.kind) {
+                .no_texture => Mesh.rasterize_notexture(
+                    utils.screen_space(ndcs[i + 0]),
+                    utils.screen_space(ndcs[i + 1]),
+                    utils.screen_space(ndcs[i + 2]),
+                    buf,
+                    light,
+                ),
+                .texture => mesh_textures[self.extra_index].rasterize(
+                    utils.screen_space(ndcs[i + 0]),
+                    utils.screen_space(ndcs[i + 1]),
+                    utils.screen_space(ndcs[i + 2]),
+                    c0[3],
+                    c1[3],
+                    c2[3],
+                    start_face_i,
+                    buf,
+                    light,
+                ),
+            }
         }
     }
 
@@ -491,24 +497,6 @@ fn sample(u: f32, v: f32, img: zigimg.Image) zigimg.color.Colorf32 {
 
 const expect = std.testing.expect;
 
-// test "open_texture" {
-//     const io = @constCast(&Io.Threaded.init(std.testing.allocator, .{})).io();
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     const gpa = arena.allocator();
-//     defer arena.deinit();
-//
-//     var image = try open_texture("tiger_uv.png", &arena, io);
-//     defer image.deinit(gpa);
-//     // print("h: {d} w: {d}\n", .{ image.height, image.width });
-//
-//     var i: usize = 0;
-//     for (image.pixels.float32) |pixel| {
-//         if (i == 10) break;
-//         print("rgb: {any}\n", .{pixel});
-//         i += 1;
-//     }
-// }
-
 test "parse" {
     const arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -524,14 +512,6 @@ test "parse" {
     var uv: [vertices.len]Vec2 = undefined;
     var mesh_texts: [vertices.len]usize = undefined;
     const res = try parse_with_texture(slice, &faces, &vertices, &uv, &mesh_texts);
-
-    // print("uv: {any}\n", .{res.uv});
-    // print("faces: {any}\n", .{res.faces});
-    // print("ts 0: {any}\n", .{res.uv[res.mesh_texts[0]]});
-    // print("ts 1: {any}\n", .{res.uv[res.mesh_texts[1]]});
-    // for (res.uv) |v| {
-    //     print("uv: {}\n", .{v});
-    // }
 
     const expected = [_]Vec3{
         // zig fmt: off
