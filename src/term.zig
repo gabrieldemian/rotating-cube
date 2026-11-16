@@ -91,6 +91,7 @@ pub fn init(stdout: std.Io.File, io: std.Io) !void {
         0x1b, '[', '>', '1', '0', 'u', // kitty keyboard protocol
     };
     try stdout.writeStreamingAll(io, &toflush);
+    handle_signals();
 }
 
 pub fn deinit(stdout: std.Io.File, io: std.Io) !void {
@@ -102,6 +103,7 @@ pub fn deinit(stdout: std.Io.File, io: std.Io) !void {
 var winsize: posix.winsize = undefined;
 
 pub fn resize(stdout: std.Io.File) void {
+    // get new window size
     _ = posix.system.ioctl(
         stdout.handle,
         posix.T.IOCGWINSZ,

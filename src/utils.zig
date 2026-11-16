@@ -49,29 +49,24 @@ pub inline fn screen_space(ndc: Vec3) Vec3 {
     return ndc * term.halfcolsrows;
 }
 
-/// From world space to clip space.
+/// Project from world space to clip space.
+/// OpenGL symmetric matrix.
+/// After perspective divide NDC: lr [-1 1] bt [-1 1] nf [0 1]
 pub fn project(v: Vec3, aspect: f32) Vec4 {
     // deg = rad * 180 / PI
     // math.pi / 2 = 180/2 = 90°
     // math.pi / 3 = 180/3 = 60°
-    const fov: f32 = math.pi / 2.0;
+    const fovy: f32 = math.pi / 2.0;
     const near: f32 = 0.1;
     const far = 300;
-
-    const top = near * @tan(fov / 2);
-    const bottom = -top;
+    // this is symmetric so it assumes that
+    // bottom = -top and left = -right
+    const top = near * @tan(fovy / 2);
     const right = top * aspect;
-    const left = -right;
-
-    const xc =
-        v[0] * (2 * near / (right - left)) +
-        v[2] * (right + left) / (right - left);
-    const yc =
-        v[1] * (2 * near) / (top - bottom) +
-        v[2] * (top + bottom) / (top - bottom);
-    const zc =
-        v[2] * (far + near) / (near - far) +
-        2 * far * near / (near - far);
+    const xc = v[0] * (near / right);
+    const yc = v[1] * (near / top);
+    const zc = v[2] * (far + near) / (near - far) +
+        (2 * far * near) / (near - far);
     const w = -v[2];
 
     return .{ xc, yc, zc, w };

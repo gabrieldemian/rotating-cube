@@ -17,13 +17,13 @@ var stdinbuf: [100]u8 = undefined;
 pub fn main(init: std.process.Init) !void {
     const stdout = Io.File.stdout();
     const stdin = Io.File.stdin();
-    term.resize(stdout);
     try term.init(stdout, init.io);
+    term.resize(stdout);
     defer term.deinit(stdout, init.io) catch {};
     try term.raw_mode();
     defer term.leave_raw_mode() catch {};
 
-    framebuf[0..3].* = [3]u8{ 0x1b, '[', 'H' };
+    framebuf[0..buf_extra].* = [buf_extra]u8{ 0x1b, '[', 'H' };
     var buf =
         framebuf[buf_extra..(@as(usize, term.cols) * term.rows * term.cell_size + buf_extra)];
 
@@ -45,8 +45,9 @@ pub fn main(init: std.process.Init) !void {
         q: bool,
     } = @fromBackingInt(0);
 
+    var zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
     var cleared = cleared_framebuf[0..buf.len];
-    for (0..@as(usize, term.rows) * term.cols) |i| {
+    for (0..zbuf.len) |i| {
         term.put_clear_cell(cleared, i);
     }
 
@@ -72,22 +73,20 @@ pub fn main(init: std.process.Init) !void {
     meshes[0].translate[0] += 3;
 
     var out_len: usize = 0;
-
     for (meshes) |mesh_| {
         out_len += mesh_.mesh.len;
     }
 
     // var out: [vert_count]Vec3 = undefined;
     var out = try init.arena.allocator().alloc(Vec3, out_len);
-    var zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
 
     while (!should_quit.load(.acquire)) {
         if (should_resize.swap(false, .seq_cst)) {
             term.resize(stdout);
             buf = framebuf[buf_extra .. (@as(usize, term.cols) * term.rows * term.cell_size) + buf_extra];
-            cleared = cleared_framebuf[0..buf.len];
             zbuf = zbuf_raw[0 .. @as(usize, term.cols) * term.rows];
-            for (0..@as(usize, term.rows) * term.cols) |i| {
+            cleared = cleared_framebuf[0..buf.len];
+            for (0..zbuf.len) |i| {
                 term.put_clear_cell(cleared, i);
             }
         }

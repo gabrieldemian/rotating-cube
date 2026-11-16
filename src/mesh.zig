@@ -220,44 +220,37 @@ pub const MeshTexture = struct {
         var z_left = (wleft[0] * v0[2] + wleft[1] * v1[2] + wleft[2] * v2[2]) * inv_area;
         var y = y_min;
 
-        const iw0 = 1.0 / w0;
-        const iw1 = 1.0 / w1;
-        const iw2 = 1.0 / w2;
+        const iw = Vec3{ w0, w1, w2 } / @as(Vec3, @splat(1));
+        const uow = Vec3{ uv0[0] * iw[0], uv1[0] * iw[1], uv2[0] * iw[2] };
+        const vow = Vec3{ uv0[1] * iw[0], uv1[1] * iw[1], uv2[1] * iw[2] };
 
-        const uow0 = uv0[0] * iw0;
-        const uow1 = uv1[0] * iw1;
-        const uow2 = uv2[0] * iw2;
-        const vow0 = uv0[1] * iw0;
-        const vow1 = uv1[1] * iw1;
-        const vow2 = uv2[1] * iw2;
+        const diw_dx = @reduce(.Add, dw_dx * iw) * inv_area;
+        const duow_dx = @reduce(.Add, dw_dx * uow) * inv_area;
+        const dvow_dx = @reduce(.Add, dw_dx * vow) * inv_area;
+        const diw_dy = @reduce(.Add, dw_dy * iw) * inv_area;
+        const duow_dy = @reduce(.Add, dw_dy * uow) * inv_area;
+        const dvow_dy = @reduce(.Add, dw_dy * vow) * inv_area;
 
-        const diw_dx = (dw_dx[0] * iw0 + dw_dx[1] * iw1 + dw_dx[2] * iw2) * inv_area;
-        const duow_dx = (dw_dx[0] * uow0 + dw_dx[1] * uow1 + dw_dx[2] * uow2) * inv_area;
-        const dvow_dx = (dw_dx[0] * vow0 + dw_dx[1] * vow1 + dw_dx[2] * vow2) * inv_area;
-        const diw_dy = (dw_dy[0] * iw0 + dw_dy[1] * iw1 + dw_dy[2] * iw2) * inv_area;
-        const duow_dy = (dw_dy[0] * uow0 + dw_dy[1] * uow1 + dw_dy[2] * uow2) * inv_area;
-        const dvow_dy = (dw_dy[0] * vow0 + dw_dy[1] * vow1 + dw_dy[2] * vow2) * inv_area;
-
-        var iw_left = (wleft[0] * iw0 + wleft[1] * iw1 + wleft[2] * iw2) * inv_area;
-        var uow_left = (wleft[0] * uow0 + wleft[1] * uow1 + wleft[2] * uow2) * inv_area;
-        var vow_left = (wleft[0] * vow0 + wleft[1] * vow1 + wleft[2] * vow2) * inv_area;
+        var iw_left = @reduce(.Add, wleft * iw) * inv_area;
+        var uow_left = @reduce(.Add, uow * wleft) * inv_area;
+        var vow_left = @reduce(.Add, vow * wleft) * inv_area;
 
         while (y < y_max) : (y += 1) {
             const row_start = @as(usize, @intCast(term.half_rows - 1 - y)) * term.cols;
             var x = x_min;
             var w = wleft;
             var z = z_left;
-            var iw = iw_left;
-            var uow = uow_left;
-            var vow = vow_left;
+            var iw_ = iw_left;
+            var uow_ = uow_left;
+            var vow_ = vow_left;
 
             while (x < x_max) : (x += 1) {
                 if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                     const col: usize = @intCast(term.half_cols + x);
                     if (z < root.zbuf_raw[row_start + col]) {
                         root.zbuf_raw[row_start + col] = z;
-                        const u = uow / iw;
-                        const v = vow / iw;
+                        const u = uow_ / iw_;
+                        const v = vow_ / iw_;
                         const pixel = sample(u, v, self.img);
                         const color = @round(Vec3{
                             pixel.r * 255,
@@ -269,9 +262,9 @@ pub const MeshTexture = struct {
                 }
                 w += dw_dx;
                 z += dz_dx;
-                iw += diw_dx;
-                uow += duow_dx;
-                vow += dvow_dx;
+                iw_ += diw_dx;
+                uow_ += duow_dx;
+                vow_ += dvow_dx;
             }
             wleft += dw_dy;
             z_left += dz_dy;
