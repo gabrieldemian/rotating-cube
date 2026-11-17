@@ -173,14 +173,6 @@ test "parse_w_mod_event_release" {
     try expect(r.end == buf.len);
 }
 
-// test "parse_mods" {
-//     const buf = [_]u8{ 0x1b, '[', '5', '7', '4', '4', '2', ';', '1', ':', '3', 'u' };
-//     const r = parse(&buf).?;
-//     try expect(r.key == 57442);
-//     try expect(r.event == .release);
-//     try expect(r.mod.shift);
-// }
-
 test "parse_ctrl_c_press" {
     const buf = [_]u8{ 0x1b, '[', '9', '9', ';', '5', 'u' };
     var r = Reader.fixed(&buf);
@@ -200,8 +192,6 @@ test "parse_ctrl_c_release" {
     try expect(res.mod.ctrl);
     try expect(r.end == buf.len);
 }
-
-// [119u[119;1:3u
 
 // DEL
 // [3~ x: 1b5b337e
@@ -234,6 +224,3 @@ test "parse_ctrl_c_release" {
 // f1
 // [1;1:1P x: 1b5b313b313a3150
 // [1;1:3P x: 1b5b313b313a3350
-
-// shift+a -> CSI 97 ; 2 ; 65 u   # The text 'A' is reported as 65
-// alt+a   -> CSI  0 ;   ; 229 u  # The text 'å' is reported as 229

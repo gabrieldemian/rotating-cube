@@ -13,7 +13,7 @@ const print = std.debug.print;
 const MeshKind = enum(u8) { texture, no_texture };
 
 var mesh_textures: [255]MeshTexture = undefined;
-var textures_len: u8 = 0; // non inclusive
+var textures_len: u8 = 0;
 
 pub const Mesh = struct {
     kind: MeshKind,
@@ -91,9 +91,9 @@ pub const Mesh = struct {
         topleft += @splat(0.5);
 
         const bias: Vec3 = .{
-            if (root.is_top_left(v1, v2)) 0 else -0.0000001,
-            if (root.is_top_left(v2, v0)) 0 else -0.0000001,
-            if (root.is_top_left(v0, v1)) 0 else -0.0000001,
+            if (is_top_left(v1, v2)) 0 else -0.0000001,
+            if (is_top_left(v2, v0)) 0 else -0.0000001,
+            if (is_top_left(v0, v1)) 0 else -0.0000001,
         };
 
         const inv_area = 1.0 / utils.edge_cross(v0, v1, v2);
@@ -199,9 +199,9 @@ pub const MeshTexture = struct {
         topleft += @splat(0.5);
 
         const bias: Vec3 = .{
-            if (root.is_top_left(v1, v2)) 0 else -0.0000001,
-            if (root.is_top_left(v2, v0)) 0 else -0.0000001,
-            if (root.is_top_left(v0, v1)) 0 else -0.0000001,
+            if (is_top_left(v1, v2)) 0 else -0.0000001,
+            if (is_top_left(v2, v0)) 0 else -0.0000001,
+            if (is_top_left(v0, v1)) 0 else -0.0000001,
         };
 
         const inv_area = 1.0 / utils.edge_cross(v0, v1, v2);
@@ -540,4 +540,10 @@ test "parse" {
         2, 7, 6, // i 33 + 3 = 36
         2, 6, 3, // i 36
     }));
+}
+
+// top left convention to solve overdraw
+inline fn is_top_left(start: anytype, end: anytype) bool {
+    const e = end - start;
+    return e[1] > 0 or (e[1] == 0 and e[0] < 0);
 }

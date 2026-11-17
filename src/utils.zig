@@ -41,7 +41,7 @@ fn centroid(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
 
 /// Return luminescence of triangle between 0.2..1.0
 pub inline fn lumi(v0: anytype, v1: anytype, v2: anytype) @TypeOf(v0) {
-    return @splat(math.clamp(normdot(light, v0, v1, v2), 0.9, 0.9));
+    return @splat(math.clamp(normdot(light, v0, v1, v2), 0.2, 0.9));
 }
 
 /// From NDC (-1 to 1) space to screen space/view space.

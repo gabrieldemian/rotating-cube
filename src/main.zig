@@ -13,6 +13,7 @@ var framebuf: [300 * 150 * term.cell_size + buf_extra]u8 = undefined;
 var cleared_framebuf: [framebuf.len - buf_extra]u8 = undefined;
 pub var zbuf_raw: [300 * 150]f32 = undefined;
 var stdinbuf: [100]u8 = undefined;
+var out_buf: [4096 * 10]Vec3 = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const stdout = Io.File.stdout();
@@ -52,33 +53,42 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // globals from the camera
-    var translate: Vec3 = .{ 0, 0, -3.5 };
+    var translate: Vec3 = .{ 0, 0, 0 };
     var rotation: Vec2 = .{ 0, 0 };
     var last_fps: u64 = 0;
 
     var meshes = [_]Mesh{
+        try mesh.Mesh.open(
+            "cube.obj",
+            init.arena,
+            init.io,
+        ),
         try mesh.MeshTexture.open(
             "squirrel.obj",
             "squirrel_uv.png",
             init.arena,
             init.io,
         ),
-        try mesh.Mesh.open(
-            "cube.obj",
+        try mesh.MeshTexture.open(
+            "tiger.obj",
+            "tiger_uv.png",
             init.arena,
             init.io,
         ),
     };
 
-    meshes[0].translate[0] += 3;
+    meshes[0].translate[2] += -3.5;
+    meshes[1].translate[2] += -3.5;
+    meshes[2].translate[2] += -3.5;
+
+    meshes[0].translate[0] += -3;
+    meshes[2].translate[0] += 3;
 
     var out_len: usize = 0;
     for (meshes) |mesh_| {
         out_len += mesh_.mesh.len;
     }
-
-    // var out: [vert_count]Vec3 = undefined;
-    var out = try init.arena.allocator().alloc(Vec3, out_len);
+    var out = out_buf[0..out_len];
 
     while (!should_quit.load(.acquire)) {
         if (should_resize.swap(false, .seq_cst)) {
@@ -150,11 +160,12 @@ pub fn main(init: std.process.Init) !void {
         //    pipeline
         // --------------
 
+        // "move camera" by transforming the meshes.
+        // simulate movement and camera rotation.
         {
             var out_i: usize = 0;
             for (meshes) |mesh_| {
                 for (0..mesh_.mesh.len) |i| {
-                    // still
                     out[out_i] = pitch(
                         yaw(mesh_.mesh[i] + translate + mesh_.translate, -rotation[0]),
                         -rotation[1],
@@ -164,11 +175,13 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        // draw things on the screen
+        // world space -> backface cull -> project (clip space, divide, NDC)
+        // -> clip -> screen space 2D -> rasterize
         {
             var out_skip: usize = 0;
             for (meshes) |mesh_| {
                 var face_i: usize = 0;
-                // world space -> project (clip space, divide, NDC) -> screen space 2D
                 while (face_i + 2 < mesh_.faces.len) : (face_i += 3) {
                     const tri = [_]Vec3{
                         out[out_skip..][mesh_.faces[face_i + 0]],
@@ -202,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
 
         try stdout.writeStreamingAll(init.io, framebuf[0 .. buf.len + buf_extra]);
         // try init.io.sleep(
-        //     Io.Duration.fromMilliseconds(ms_to_sleep / 2),
+        //     Io.Duration.fromMilliseconds(ms_to_sleep),
         //     Io.Clock.boot,
         // );
     }
@@ -239,19 +252,7 @@ inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: colo
     draw_line(v2, v0, buf, rgb);
 }
 
-// top left convention to solve overdraw
-pub inline fn is_top_left(start: anytype, end: anytype) bool {
-    const e = end - start;
-    return e[1] > 0 or (e[1] == 0 and e[0] < 0);
-}
-
 const std = @import("std");
-const Io = std.Io;
-const math = std.math;
-const print = std.debug.print;
-const posix = std.posix;
-const expect = std.testing.expect;
-
 const key = @import("key.zig");
 const mesh = @import("mesh.zig");
 const Mesh = mesh.Mesh;
@@ -266,3 +267,8 @@ const magnitude = utils.magnitude;
 const dot = utils.dot;
 const project = utils.project;
 const screen_space = utils.screen_space;
+const Io = std.Io;
+const math = std.math;
+const print = std.debug.print;
+const posix = std.posix;
+const expect = std.testing.expect;
