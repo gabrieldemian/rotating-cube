@@ -181,14 +181,14 @@ pub fn main(init: std.process.Init) !void {
         {
             var out_skip: usize = 0;
             for (meshes) |mesh_| {
-                var face_i: usize = 0;
-                while (face_i + 2 < mesh_.faces.len) : (face_i += 3) {
+                for (0..mesh_.faces.len / 3) |face_i| {
+                    const face_start = 3 * face_i;
                     const tri = [_]Vec3{
-                        out[out_skip..][mesh_.faces[face_i + 0]],
-                        out[out_skip..][mesh_.faces[face_i + 1]],
-                        out[out_skip..][mesh_.faces[face_i + 2]],
+                        out[out_skip..][mesh_.faces[face_start + 0]],
+                        out[out_skip..][mesh_.faces[face_start + 1]],
+                        out[out_skip..][mesh_.faces[face_start + 2]],
                     };
-                    mesh_.rasterize(face_i, tri, buf);
+                    mesh_.rasterize(face_start, tri, buf);
                 }
                 out_skip += mesh_.mesh.len;
             }

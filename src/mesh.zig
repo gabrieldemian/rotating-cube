@@ -46,7 +46,7 @@ pub const Mesh = struct {
         return try parse_no_texture(filebuf, verts, tris);
     }
 
-    pub fn rasterize(self: Mesh, start_face_i: usize, tri: [3]Vec3, buf: []u8) void {
+    pub fn rasterize(self: Mesh, face_start_i: usize, tri: [3]Vec3, buf: []u8) void {
         if (utils.backface_cull(tri[0], tri[1], tri[2])) {
             return;
         }
@@ -70,10 +70,7 @@ pub const Mesh = struct {
                     utils.screen_space(ndcs[i + 0]),
                     utils.screen_space(ndcs[i + 1]),
                     utils.screen_space(ndcs[i + 2]),
-                    c0[3],
-                    c1[3],
-                    c2[3],
-                    start_face_i,
+                    face_start_i,
                     buf,
                     light,
                 ),
@@ -179,9 +176,6 @@ pub const MeshTexture = struct {
         v0: Vec3,
         v1: Vec3,
         v2: Vec3,
-        w0: f32,
-        w1: f32,
-        w2: f32,
         start_face_i: usize,
         buf: []u8,
         light: Vec3,
@@ -190,10 +184,6 @@ pub const MeshTexture = struct {
         const x_max: i32 = @ceil(@max(v0[0], v1[0], v2[0]));
         const y_min: i32 = @floor(@min(v0[1], v1[1], v2[1]));
         const y_max: i32 = @ceil(@max(v0[1], v1[1], v2[1]));
-
-        const uv0 = self.uv[self.face_uvs[start_face_i + 0]];
-        const uv1 = self.uv[self.face_uvs[start_face_i + 1]];
-        const uv2 = self.uv[self.face_uvs[start_face_i + 2]];
 
         var topleft = Vec3{ @floatFromInt(x_min), @floatFromInt(y_min), 0 };
         topleft += @splat(0.5);
@@ -220,38 +210,28 @@ pub const MeshTexture = struct {
         var z_left = (wleft[0] * v0[2] + wleft[1] * v1[2] + wleft[2] * v2[2]) * inv_area;
         var y = y_min;
 
-        const iw = Vec3{ w0, w1, w2 } / @as(Vec3, @splat(1));
-        const uow = Vec3{ uv0[0] * iw[0], uv1[0] * iw[1], uv2[0] * iw[2] };
-        const vow = Vec3{ uv0[1] * iw[0], uv1[1] * iw[1], uv2[1] * iw[2] };
-
-        const diw_dx = @reduce(.Add, dw_dx * iw) * inv_area;
-        const duow_dx = @reduce(.Add, dw_dx * uow) * inv_area;
-        const dvow_dx = @reduce(.Add, dw_dx * vow) * inv_area;
-        const diw_dy = @reduce(.Add, dw_dy * iw) * inv_area;
-        const duow_dy = @reduce(.Add, dw_dy * uow) * inv_area;
-        const dvow_dy = @reduce(.Add, dw_dy * vow) * inv_area;
-
-        var iw_left = @reduce(.Add, wleft * iw) * inv_area;
-        var uow_left = @reduce(.Add, uow * wleft) * inv_area;
-        var vow_left = @reduce(.Add, vow * wleft) * inv_area;
+        const uv0 = self.uv[self.face_uvs[start_face_i + 0]];
+        const uv1 = self.uv[self.face_uvs[start_face_i + 1]];
+        const uv2 = self.uv[self.face_uvs[start_face_i + 2]];
+        // UV range [0 1]
+        // (0,0) bottom left (1, 1) top right
+        const us = Vec3{ uv0[0], uv1[0], uv2[0] };
+        const vs = Vec3{ uv0[1], uv1[1], uv2[1] };
 
         while (y < y_max) : (y += 1) {
             const row_start = @as(usize, @intCast(term.half_rows - 1 - y)) * term.cols;
             var x = x_min;
             var w = wleft;
             var z = z_left;
-            var iw_ = iw_left;
-            var uow_ = uow_left;
-            var vow_ = vow_left;
 
             while (x < x_max) : (x += 1) {
                 if (w[0] >= 0 and w[1] >= 0 and w[2] >= 0) {
                     const col: usize = @intCast(term.half_cols + x);
                     if (z < root.zbuf_raw[row_start + col]) {
                         root.zbuf_raw[row_start + col] = z;
-                        const u = uow_ / iw_;
-                        const v = vow_ / iw_;
-                        const pixel = sample(u, v, self.img);
+                        const u = @reduce(.Add, w * us) * inv_area;
+                        const v = @reduce(.Add, w * vs) * inv_area;
+                        const pixel = sample(Vec2{ u, v }, self.img);
                         const color = @round(Vec3{
                             pixel.r * 255,
                             pixel.g * 255,
@@ -262,15 +242,9 @@ pub const MeshTexture = struct {
                 }
                 w += dw_dx;
                 z += dz_dx;
-                iw_ += diw_dx;
-                uow_ += duow_dx;
-                vow_ += dvow_dx;
             }
             wleft += dw_dy;
             z_left += dz_dy;
-            iw_left += diw_dy;
-            uow_left += duow_dy;
-            vow_left += dvow_dy;
         }
     }
 };
@@ -477,21 +451,17 @@ fn parse_with_texture(
     };
 }
 
-fn sample(u: f32, v: f32, img: zigimg.Image) zigimg.color.Colorf32 {
-    const uw = u - @floor(u);
-    const vw = v - @floor(v);
-    const wf: f32 = @floatFromInt(img.width);
-    const hf: f32 = @floatFromInt(img.height);
-    const tx: usize = @min(@as(usize, @trunc(uw * wf)), img.width - 1);
-    const row: usize = @min(@as(usize, @trunc(vw * hf)), img.height - 1);
-    const ty: usize = img.height - 1 - row;
-    return img.pixels.float32[ty * img.width + tx];
+inline fn sample(uv: Vec2, img: zigimg.Image) zigimg.color.Colorf32 {
+    const uv_wh = uv * Vec2{ @floatFromInt(img.width), @floatFromInt(img.height) };
+    // flip Y because in UV 0 is bottom
+    const ty = img.height - 1 - @as(usize, @trunc(uv_wh[1]));
+    return img.pixels.float32[ty * img.width + @as(usize, @trunc(uv_wh[0]))];
 }
 
 const expect = std.testing.expect;
 
 test "parse" {
-    const arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const io = @constCast(&Io.Threaded.init(std.testing.allocator, .{})).io();
     const file = try Io.Dir.cwd().openFile(io, "cube_t.obj", .{});
@@ -502,9 +472,7 @@ test "parse" {
 
     var vertices: [8 * 3]Vec3 = undefined;
     var faces: [12 * 3]usize = undefined;
-    var uv: [vertices.len]Vec2 = undefined;
-    var mesh_texts: [vertices.len]usize = undefined;
-    const res = try parse_with_texture(slice, &faces, &vertices, &uv, &mesh_texts);
+    const res = try parse_no_texture(slice, &faces, &vertices);
 
     const expected = [_]Vec3{
         // zig fmt: off

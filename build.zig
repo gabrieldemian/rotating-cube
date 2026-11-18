@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
 
     const exe_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/obj.zig"),
+            .root_source_file = b.path("src/mesh.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

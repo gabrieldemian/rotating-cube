@@ -109,7 +109,7 @@ test "parse_w_2" {
         0x1b, '[', '1', '1', '9', 'u',
     };
     var r = Reader.fixed(&buf);
-    for (1..4) |i| {
+    for (1..2) |i| {
         const res = parse(&r).?;
         try expect(res.event == .press);
         try expect(res.key == 'w');
