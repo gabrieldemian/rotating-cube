@@ -1,15 +1,18 @@
-pub const Vec3 = @Vector(3, f32);
-pub const Vec2 = @Vector(2, f32);
 const std = @import("std");
-const zigimg = @import("zigimg");
-const colors = @import("colors.zig");
-const utils = @import("utils.zig");
-const term = @import("term.zig");
-const root = @import("root");
 const Io = std.Io;
 const mem = std.mem;
 const print = std.debug.print;
+const expect = std.testing.expect;
+const root = @import("root");
 
+const zigimg = @import("zigimg");
+
+const colors = @import("colors.zig");
+const term = @import("term.zig");
+const utils = @import("utils.zig");
+
+pub const Vec3 = @Vector(3, f32);
+pub const Vec2 = @Vector(2, f32);
 const MeshKind = enum(u8) { texture, no_texture };
 
 var mesh_textures: [255]MeshTexture = undefined;
@@ -457,8 +460,6 @@ inline fn sample(uv: Vec2, img: zigimg.Image) zigimg.color.Colorf32 {
     const ty = img.height - 1 - @as(usize, @trunc(uv_wh[1]));
     return img.pixels.float32[ty * img.width + @as(usize, @trunc(uv_wh[0]))];
 }
-
-const expect = std.testing.expect;
 
 test "parse" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

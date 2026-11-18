@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const root = @import("root");
+
 const colors = @import("colors.zig");
 
 const ColorType = enum(u8) { fg = '3', bg = '4' };

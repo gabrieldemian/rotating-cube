@@ -252,14 +252,22 @@ inline fn draw_line3(v0: anytype, v1: anytype, v2: anytype, buf: []u8, rgb: colo
     draw_line(v2, v0, buf, rgb);
 }
 
+
 const std = @import("std");
+const Io = std.Io;
+const math = std.math;
+const print = std.debug.print;
+const posix = std.posix;
+const expect = std.testing.expect;
+
+const zigimg = @import("zigimg");
+
+const colors = @import("colors.zig");
 const key = @import("key.zig");
 const mesh = @import("mesh.zig");
 const Mesh = mesh.Mesh;
 const term = @import("term.zig");
 const utils = @import("utils.zig");
-const colors = @import("colors.zig");
-const zigimg = @import("zigimg");
 const normal = utils.normal;
 const yaw = utils.yaw;
 const pitch = utils.pitch;
@@ -267,8 +275,4 @@ const magnitude = utils.magnitude;
 const dot = utils.dot;
 const project = utils.project;
 const screen_space = utils.screen_space;
-const Io = std.Io;
-const math = std.math;
-const print = std.debug.print;
-const posix = std.posix;
-const expect = std.testing.expect;
+

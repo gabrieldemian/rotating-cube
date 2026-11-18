@@ -740,7 +740,6 @@ test "multiplication (rounding)" {
         }
     }
 
-    // below midpoint (negative)
     {
         {
             const a = Q8_7.withNumerator(-16);

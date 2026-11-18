@@ -1,7 +1,9 @@
 const std = @import("std");
-const root = @import("root");
-const term = @import("term.zig");
 const math = std.math;
+const expect = std.testing.expect;
+const root = @import("root");
+
+const term = @import("term.zig");
 
 pub const Vec2 = @Vector(2, f32);
 pub const Vec3 = @Vector(3, f32);
@@ -33,10 +35,6 @@ pub inline fn normal(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
 /// Cast a ray between point `p` and triangle `v` and return the dot product.
 pub inline fn normdot(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) f32 {
     return dot(normal(v0, v1, v2), norm(p - v0));
-}
-
-fn centroid(v0: Vec3, v1: Vec3, v2: Vec3) Vec3 {
-    return (v0 + v1 + v2) / Vec3{ 3, 3, 3 };
 }
 
 /// Return luminescence of triangle between 0.0..1.0
@@ -186,12 +184,6 @@ pub fn roll(v: Vec3, a: f32) Vec3 {
     return .{ v[0] * cos - v[1] * sin, v[0] * sin + v[1] * cos, v[2] };
 }
 
-pub fn rotate_y(v: Vec3, a: f32) Vec3 {
-    const sin = @sin(a);
-    const cos = @cos(a);
-    return .{ v[0], v[1] * cos - v[2] * sin, v[2] };
-}
-
 /// Normalize vector `v`
 pub inline fn norm(v: anytype) @TypeOf(v) {
     return v / @as(@TypeOf(v), @splat(magnitude(v)));
@@ -231,8 +223,6 @@ pub fn bary(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) Vec3 {
     const gamma = edge_cross(v0, v1, p) / 1;
     return Vec3{ alpha, beta, gamma } / area;
 }
-
-const expect = std.testing.expect;
 
 test "cull" {
     // front triangle

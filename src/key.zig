@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const Reader = std.Io.Reader;
+const print = std.debug.print;
+const expect = std.testing.expect;
 
 pub const Event = enum(u8) { press = '1', repeat = '2', release = '3' };
 pub const Key = struct {
@@ -90,9 +92,6 @@ pub fn parse(r: *Reader) ?Key {
         .key = @intCast(value),
     };
 }
-
-const print = std.debug.print;
-const expect = std.testing.expect;
 
 test "parse_w" {
     const buf = [_]u8{ 0x1b, '[', '1', '1', '9', 'u' };
